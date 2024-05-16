@@ -1,0 +1,58 @@
+services:
+  logstash:
+    hostname: logstash
+    image: "docker.elastic.co/logstash/logstash:8.13.2"
+    volumes:
+      - ./logstash.conf/:/usr/share/logstash/pipeline/logstash.conf
+      - ./packets.log:/usr/share/logstash/packets.log
+    environment:
+      XPACK_MONITORING_ENABLED: "false"
+
+  zookeeper:
+    hostname: zookeeper
+    image: "confluentinc/cp-zookeeper:latest"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000 
+    ports:
+      - 2181:2181
+
+  kafkaserver:
+    hostname: kafkaserver
+    image: "confluentinc/cp-kafka:latest"
+    depends_on:
+      - zookeeper
+    ports:
+      - 9092:9092
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafkaserver:9092
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  init-kafka:
+    image: "confluentinc/cp-kafka:latest"
+    depends_on:
+      - kafkaserver
+    entrypoint: [ '/bin/sh', '-c' ]
+    command: |
+      "
+      echo -e 'Creating kafka topics'
+      kafka-topics --bootstrap-server kafkaserver:9092 --create --if-not-exists --topic packets --replication-factor 1 --partitions 1
+      echo -e 'Successfully created the following topics:'
+      kafka-topics --bootstrap-server kafkaserver:9092 --list
+      "
+  
+  kafkaui:
+    hostname: kafkaui
+    image: "provectuslabs/kafka-ui:latest"
+    ports:
+      - 8080:8080
+    depends_on:
+      - kafkaserver
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "local"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "PLAINTEXT://kafkaserver:9092"
+
+# docker-compose up -d
+# docker-compose down

@@ -1,3 +1,3 @@
-#Start
+## Start
 
-sudo tshark -i 'dev' -l -n -x -T json > 'outputfile'
+sudo tshark -i 'dev' -l -n -x -T json > packets.log
