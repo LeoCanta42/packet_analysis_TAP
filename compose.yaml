@@ -57,10 +57,12 @@ services:
   py-spark:
     hostname: py-spark
     image: "apache/spark-py:latest"
+    depends_on:
+      - kafkaserver
     ports:
       - 4040:4040
     volumes:
-      - ./packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
+      - ./$PYFILE.py:/opt/spark/work-dir/packet_analyzer.py
     command: '/opt/spark/bin/spark-submit /opt/spark/work-dir/packet_analyzer.py'
 
 # docker-compose up -d

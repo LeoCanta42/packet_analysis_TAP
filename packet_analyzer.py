@@ -1,6 +1,6 @@
 from pyspark.sql import SparkSession
 
-print("Starting packet analyzer...")
+print("*** Starting packet analyzer...\n\n")
 # Initialize SparkSession
 spark = SparkSession.builder.appName("KafkaSparkIntegration").getOrCreate()
 
@@ -10,7 +10,6 @@ df = spark.readStream.format("kafka") \
     .option("subscribe", "packets") \
     .load()
 
-# Process the data (this is a simple example)
-df = df.selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)")
+print(df)
 
-df.writeStream.format("console").start().awaitTermination()
+print("*** Closing packet analyzer...\n\n")
