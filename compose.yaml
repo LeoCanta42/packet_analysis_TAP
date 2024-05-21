@@ -58,13 +58,10 @@ services:
     hostname: py-spark
     image: "apache/spark-py:latest"
     ports:
-      - 8888:8888
+      - 4040:4040
     volumes:
-      - ./packet_analyzer.py:/usr/share/packet_analyzer.py
-    entrypoint: [ '/bin/sh', '-c' , 'python3 /usr/share/packet_analyzer.py']
-
-
-
+      - ./packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
+    command: '/opt/spark/bin/spark-submit /opt/spark/work-dir/packet_analyzer.py'
 
 # docker-compose up -d
 # docker-compose down
