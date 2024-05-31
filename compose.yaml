@@ -50,15 +50,38 @@ services:
   #     KAFKA_CLUSTERS_0_NAME: "local"
   #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "PLAINTEXT://kafkaserver:9092"
 
-  py-spark:
-    hostname: py-spark
-    image: "apache/spark-py:latest"
+  spark:
+    hostname: spark
+    build: ./spark
     depends_on:
       init-kafka:
         condition: service_completed_successfully
+      elasticsearch:
+        condition: service_started
     volumes:
       - ./packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
-    command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0 /opt/spark/work-dir/packet_analyzer.py"
-  #Command to run the services
-  # docker-compose up -d
-  # docker-compose down
+    command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/work-dir/packet_analyzer.py"
+
+  elasticsearch:
+    hostname: elasticsearch
+    image: "docker.elastic.co/elasticsearch/elasticsearch:8.13.4"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    mem_limit: 1g
+    ports:
+      - 9200:9200
+
+  kibana:
+    hostname: kibana
+    image: "docker.elastic.co/kibana/kibana:8.13.4"
+    depends_on:
+      - elasticsearch
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - 5601:5601
+
+#Command to run the services
+# docker-compose up -d
+# docker-compose down

@@ -1,6 +1,12 @@
 from pyspark.sql import SparkSession
+from pyspark.conf import SparkConf
 
-print("*** Starting packet analyzer...\n\n")
+elastic_index = "packets"
+
+# Elastic conf
+sparkConf = SparkConf().set("es.nodes", "elasticsearch") \
+                        .set("es.port", "9200")
+
 # Initialize SparkSession
 spark = SparkSession.builder.appName("KafkaSparkIntegration").getOrCreate()
 
@@ -12,8 +18,9 @@ df = spark.readStream.format("kafka") \
     .option("subscribe", "packets") \
     .load()
 
-#print packets to console
-query = df.writeStream.outputMode("append").format("console").start()
-query.awaitTermination()
+df = df.selectExpr("CAST(timestamp AS STRING)", "CAST(value AS STRING)") \
 
-print("*** Closing packet analyzer...\n\n")
+df.writeStream \
+    .format("es") \
+    .start(elastic_index) \
+    .awaitTermination()

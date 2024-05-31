@@ -16,5 +16,6 @@ docker-compose down
 logstash 8.13.2
 zookeper right after 7.6.1
 cp-kafka right after 7.6.1
-kafka-ui right after 0.7.2
-spark-py right after 3.4.0
+spark custom 3.5.1
+elasticsearch 8.13.4
+kibana 8.13.4
