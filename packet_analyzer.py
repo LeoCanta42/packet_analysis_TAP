@@ -8,7 +8,7 @@ sparkConf = SparkConf().set("es.nodes", "elasticsearch") \
                         .set("es.port", "9200")
 
 # Initialize SparkSession
-spark = SparkSession.builder.appName("KafkaSparkIntegration").getOrCreate()
+spark = SparkSession.builder.appName("KafkaSparkIntegration").config(conf=sparkConf).getOrCreate()
 
 spark.sparkContext.setLogLevel("ERROR")
 
@@ -21,6 +21,7 @@ df = spark.readStream.format("kafka") \
 df = df.selectExpr("CAST(timestamp AS STRING)", "CAST(value AS STRING)") \
 
 df.writeStream \
+    .option("checkpointLocation", "/tmp/") \
     .format("es") \
     .start(elastic_index) \
     .awaitTermination()
