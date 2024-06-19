@@ -38,38 +38,40 @@ services:
       echo -e 'Successfully created the following topics:'
       kafka-topics --bootstrap-server kafkaserver:9092 --list
       "
-  kafkaui:
-    hostname: kafkaui
-    image: "provectuslabs/kafka-ui:latest"
-    ports:
-      - 8080:8080
-    depends_on:
-      - kafkaserver
-    environment:
-      KAFKA_CLUSTERS_0_NAME: "local"
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "PLAINTEXT://kafkaserver:9092"
-  # spark:
-  #   hostname: spark
-  #   build: ./spark
-  #   depends_on:
-  #     init-kafka:
-  #       condition: service_completed_successfully
-  #     elasticsearch:
-  #       condition: service_started
-  #   volumes:
-  #     - ./packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
-  #   command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/work-dir/packet_analyzer.py"
-
-  # elasticsearch:
-  #   hostname: elasticsearch
-  #   image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
-  #   environment:
-  #     - discovery.type=single-node
-  #     - xpack.security.enabled=false
-  #   mem_limit: 1 GB
+  # kafkaui:
+  #   hostname: kafkaui
+  #   image: "provectuslabs/kafka-ui:latest"
   #   ports:
-  #     - 9200:9200
+  #     - 8080:8080
+  #   depends_on:
+  #     - kafkaserver
+  #   environment:
+  #     KAFKA_CLUSTERS_0_NAME: "local"
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "PLAINTEXT://kafkaserver:9092"
 
+  spark:
+    hostname: spark
+    build: ./spark
+    depends_on:
+      init-kafka:
+        condition: service_completed_successfully
+      elasticsearch:
+        condition: service_started
+    volumes:
+      - ./packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
+      - ./spark/abuseipdb.key:/opt/spark/work-dir/abuseipdb.key
+      - ./spark/GeoLite2-City.mmdb:/opt/spark/work-dir/GeoLite2-City.mmdb
+      - ./spark/GeoLite2-Country.mmdb:/opt/spark/work-dir/GeoLite2-Country.mmdb
+    command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/work-dir/packet_analyzer.py"
+  elasticsearch:
+    hostname: elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    mem_limit: 1 GB
+    ports:
+      - 9200:9200
   # kibana:
   #   hostname: kibana
   #   image: docker.elastic.co/kibana/kibana:8.13.4
