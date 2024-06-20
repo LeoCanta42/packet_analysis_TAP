@@ -4,8 +4,73 @@ from pyspark.sql.functions import col, from_json
 from pyspark.sql.types import StructType, StructField, StringType, BooleanType, ArrayType
 import geoip2.database
 import requests
-from pyod.models.knn import KNN
+import pandas as pd
+from pyod.models.iforest import IForest
+from sklearn.datasets import make_blobs
+from sklearn.preprocessing import StandardScaler
 import numpy as np
+from ipaddress import ip_address, ip_network
+
+################################
+# Anomaly detection with model #
+################################
+
+# Create a synthetic dataset with outliers
+X, _ = make_blobs(n_samples=300, centers=1, cluster_std=0.5, random_state=42)
+# Add some outliers
+np.random.seed(42)
+X = np.concatenate([X, np.random.uniform(low=-6, high=6, size=(20, 2))], axis=0)
+
+# Standardize the data
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Convert to DataFrame for better visualization
+df = pd.DataFrame(X_scaled, columns=['Feature1', 'Feature2'])
+
+# Train the model
+def train():
+    model = IForest(contamination=0.05, random_state=42)
+    model.fit(X_scaled)
+    return model
+
+
+################################
+#   IP type classification     #
+################################
+
+# Define private IP ranges
+private_ipv4_ranges = [
+    ip_network('10.0.0.0/8'),
+    ip_network('172.16.0.0/12'),
+    ip_network('192.168.0.0/16'),
+    ip_network('127.0.0.0/8'),
+    ip_network('169.254.0.0/16'),
+    ip_network('224.0.0.0/4'),
+    ip_network('0.0.0.0/8'),
+    ip_network('2001:db8::/32'),
+]
+
+private_ipv6_ranges = [
+    ip_network('fc00::/7'),
+    ip_network('fe80::/10'),
+    ip_network('ff00::/8'),
+]
+
+def is_private_ip(ip):
+    if ip is None:
+        return False
+    ip = ip_address(ip)
+    if ip.version == 4:
+        return any(ip in net for net in private_ipv4_ranges)
+    elif ip.version == 6:
+        return any(ip in net for net in private_ipv6_ranges)
+    return False
+
+
+################################
+#    Defining packet schema    #
+################################
 
 # Define the schema
 frame_schema = StructType([
@@ -53,20 +118,33 @@ schema = StructType([
     ]), True)
 ])
 
+################################
+#        Geolocation           #
+################################
 # Take the geolocalization from the IP using local GeoLite2-DB
-def get_geolocation(ip):
-    try:
-        reader = geoip2.database.Reader('GeoLite2-Country.mmdb')
-        response = reader.country(ip)
-        return response.country.name
-    except:
-        return "Unknown"
+def get_geolocation_geo2(ip):
+    if is_private_ip(ip):
+        return "Special or private IP Address - No Geolocation"
+    else:
+        try:
+            reader = geoip2.database.Reader('GeoLite2-Country.mmdb')
+            response = reader.country(ip)
+            return response.country.name
+        except:
+            return "Unknown"
 
 # Take the geolocalization from the IP using db-ip.com
 def get_geolocation_dbip(ip):
-    url = f"https://api.db-ip.com/v2/free/{ip}"
-    response = requests.get(url)
-    return response.json()
+    if is_private_ip(ip):
+        return "Special or private IP Address - No Geolocation"
+    else:
+        url = f"https://api.db-ip.com/v2/free/{ip}"
+        response = requests.get(url)
+        return response.json()
+
+################################
+#        IP Threat             #
+################################
 
 # Check if the IP is a threat
 def check_ip_threat(ip):
@@ -78,8 +156,19 @@ def check_ip_threat(ip):
     response = requests.get(url, headers=headers)
     return response.json()
     
-def main():
-    elastic_index = "packets"
+
+################################
+#       Global variables       #
+################################
+
+elastic_index = "packets"
+
+
+################################
+#           Main               #
+################################
+
+def main():    
 
     # Elastic conf
     sparkConf = SparkConf().set("es.nodes", "elasticsearch") \
@@ -101,7 +190,8 @@ def main():
     df = df.select(from_json(col("value"), schema).alias("data")).select("data.*")
 
     # Take position from the IP
-    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_dbip)
+
+    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_geo2)
 
     df = df.withColumn("src_position", get_geolocation_udf(col("layers.ip.ip_ip_src")))
     df = df.withColumn("dst_position", get_geolocation_udf(col("layers.ip.ip_ip_dst")))
@@ -113,8 +203,8 @@ def main():
     df = df.withColumn("dst_threat", check_ip_threat_udf(col("layers.ip.ip_ip_dst")))
 
     # Print to console debug
-    console = df.writeStream.outputMode("append").format("console").start()
-    console.awaitTermination()
+    # console = df.writeStream.outputMode("append").format("console").start()
+    # console.awaitTermination()
 
     # Write to Elastic
     elastic = df.writeStream \

@@ -72,16 +72,15 @@ services:
     mem_limit: 1 GB
     ports:
       - 9200:9200
-  # kibana:
-  #   hostname: kibana
-  #   image: docker.elastic.co/kibana/kibana:8.13.4
-  #   depends_on:
-  #     - elasticsearch
-  #   environment:
-  #     - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-  #   ports:
-  #     - 5601:5601
-
+  kibana:
+    hostname: kibana
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    depends_on:
+      - elasticsearch
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - 5601:5601
   #Command to run the services
   # docker-compose up -d
   # docker-compose down
