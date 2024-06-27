@@ -58,8 +58,9 @@ services:
       elasticsearch:
         condition: service_started
     volumes:
-      - ./packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
+      - ./spark/packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
       - ./spark/abuseipdb.key:/opt/spark/work-dir/abuseipdb.key
+      - ./spark/anomaly_detection_model.pkl:/opt/spark/work-dir/anomaly_detection_model.pkl
       - ./spark/GeoLite2-City.mmdb:/opt/spark/work-dir/GeoLite2-City.mmdb
       - ./spark/GeoLite2-Country.mmdb:/opt/spark/work-dir/GeoLite2-Country.mmdb
     command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/work-dir/packet_analyzer.py"

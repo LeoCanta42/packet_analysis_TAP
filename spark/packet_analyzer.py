@@ -1,39 +1,25 @@
 from pyspark.sql import SparkSession
 from pyspark.conf import SparkConf
 from pyspark.sql.functions import col, from_json
-from pyspark.sql.types import StructType, StructField, StringType, BooleanType, ArrayType
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
 import geoip2.database
 import requests
-import pandas as pd
-from pyod.models.iforest import IForest
-from sklearn.datasets import make_blobs
-from sklearn.preprocessing import StandardScaler
 import numpy as np
 from ipaddress import ip_address, ip_network
+import pickle
 
 ################################
 # Anomaly detection with model #
 ################################
 
-# Create a synthetic dataset with outliers
-X, _ = make_blobs(n_samples=300, centers=1, cluster_std=0.5, random_state=42)
-# Add some outliers
-np.random.seed(42)
-X = np.concatenate([X, np.random.uniform(low=-6, high=6, size=(20, 2))], axis=0)
+# Load the trained model
+with open("anomaly_detection_model.pkl", "rb") as f:
+    clf = pickle.load(f)
 
-# Standardize the data
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-
-# Convert to DataFrame for better visualization
-df = pd.DataFrame(X_scaled, columns=['Feature1', 'Feature2'])
-
-# Train the model
-def train():
-    model = IForest(contamination=0.05, random_state=42)
-    model.fit(X_scaled)
-    return model
-
+# Define a function to predict anomalies
+def detect_anomaly(*cols):
+    X = np.column_stack(cols)
+    return clf.predict(X)
 
 ################################
 #   IP type classification     #
@@ -67,6 +53,12 @@ def is_private_ip(ip):
         return any(ip in net for net in private_ipv6_ranges)
     return False
 
+# Convert IP addresses to numeric
+def ip_to_int(ip):
+    try:
+        return int(ip_address(ip))
+    except:
+        return None
 
 ################################
 #    Defining packet schema    #
@@ -202,16 +194,56 @@ def main():
     df = df.withColumn("src_threat", check_ip_threat_udf(col("layers.ip.ip_ip_src")))
     df = df.withColumn("dst_threat", check_ip_threat_udf(col("layers.ip.ip_ip_dst")))
 
+    # Anomaly detection
+    # Prepare features for anomaly detection
+    df_features = df.select(
+        "timestamp",
+        "layers.frame.frame_frame_time",
+        "layers.frame.frame_frame_len",
+        "layers.eth.eth_eth_src",
+        "layers.eth.eth_eth_dst",
+        "layers.eth.eth_eth_type",
+        "layers.ip.ip_ip_src",
+        "layers.ip.ip_ip_dst",
+        "layers.ip.ip_ip_proto",
+        "layers.udp.udp_udp_srcport",
+        "layers.udp.udp_udp_dstport",
+        "layers.dns.dns_dns_qry_name",
+        "layers.dns.dns_dns_qry_type",
+        "layers.dns.dns_dns_qry_class"
+    )
+
+    udf_ip_to_int = spark.udf.register("ip_to_int", ip_to_int, IntegerType())
+    df_features = df_features.withColumn("ip_ip_src", udf_ip_to_int(col("layers.ip.ip_ip_src")))
+    df_features = df_features.withColumn("ip_ip_dst", udf_ip_to_int(col("layers.ip.ip_ip_dst")))
+
+    # Apply anomaly detection model
+    df_features = df_features.withColumn("is_anomaly", detect_anomaly(
+        col("layers.frame.frame_frame_time").cast("double"),
+        col("layers.frame.frame_frame_len").cast("int"),
+        col("layers.eth.eth_eth_src"),
+        col("layers.eth.eth_eth_dst"),
+        col("layers.eth.eth_eth_type"),
+        col("ip_ip_src"),
+        col("ip_ip_dst"),
+        col("layers.ip.ip_ip_proto").cast("int"),
+        col("layers.udp.udp_udp_srcport").cast("int"),
+        col("layers.udp.udp_udp_dstport").cast("int"),
+        col("layers.dns.dns_dns_qry_name"),
+        col("layers.dns.dns_dns_qry_type").cast("int"),
+        col("layers.dns.dns_dns_qry_class").cast("int")
+    ))
+    
     # Print to console debug
-    # console = df.writeStream.outputMode("append").format("console").start()
-    # console.awaitTermination()
+    console = df_features.writeStream.outputMode("append").format("console").start()
+    console.awaitTermination()
 
     # Write to Elastic
-    elastic = df.writeStream \
-        .option("checkpointLocation", "/tmp/") \
-        .format("es") \
-        .start(elastic_index)
-    elastic.awaitTermination()
+    # elastic = df_features.writeStream \
+    #     .option("checkpointLocation", "/tmp/") \
+    #     .format("es") \
+    #     .start(elastic_index)
+    # elastic.awaitTermination()
     
 
 if __name__ == "__main__":
