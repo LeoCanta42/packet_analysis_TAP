@@ -1,6 +1,6 @@
 ## Start
 ### First shell
-./start.sh 'netowrk-device'
+./start.sh 'netowrk-device' time
 ### Second shell
 export PYFILE='the python program for spark'
 docker-compose up -d

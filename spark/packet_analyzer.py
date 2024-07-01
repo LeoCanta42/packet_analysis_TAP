@@ -1,7 +1,8 @@
 from pyspark.sql import SparkSession
 from pyspark.conf import SparkConf
-from pyspark.sql.functions import col, from_json
-from pyspark.sql.types import StructType, StructField, StringType, ArrayType
+from pyspark.ml.feature import VectorAssembler
+from pyspark.sql.functions import col, from_json, unix_timestamp, window, count, avg, to_timestamp
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType, DoubleType
 import geoip2.database
 import requests
 from ipaddress import ip_address, ip_network
@@ -241,13 +242,42 @@ def main():
     
     # Load the model
     model = load('iforest_model.joblib')
-    # Define the features
+
+    # Convert frame_time like Feb  1 2020 03:19:45.377844893 to timestamp
+    df = df.withColumn("frame_time", to_timestamp(col("layers.frame.frame_frame_time"), "MMM  d yyyy HH:mm:ss.SSSSSSSSS"))
+
+    # Add unix timestamp to DataFrame
+    tDf = df.withColumn("timestamp", unix_timestamp(col("frame_time")))
+
+    # Group with 1 minute time, ip_src, frame_protocols and calculate matrix
+    gDf = tDf.groupBy(
+        window(col("frame_time"), "1 minute").alias("time_window"),
+        col("layers.ip.ip_ip_src").alias("ip_src"),
+        col("layers.frame.frame_frame_protocols").alias("frame_protocols")
+    ).agg(
+        count("*").alias("count"),
+        avg("layers.ip.ip_ip_len").alias("ip_avg_len"),
+        avg("layers.frame.frame_frame_len").alias("frame_avg_len"),
+        (avg("layers.ip.ip_ip_len") / max("layers.ip.ip_ip_len")).alias("ip_local_anomaly"),
+        (avg("layers.frame.frame_frame_len") / max("layers.frame.frame_frame_len")).alias("frame_local_anomaly")
+    ).withColumn("start", col("time_window").getItem("start")).withColumn("end", col("time_window").getItem("end"))
+
+    # Add feature column using VectorAssembler
+    cols = ["ip_avg_len", "frame_avg_len", "ip_local_anomaly", "frame_local_anomaly", "count"]
+    assembler = VectorAssembler(inputCols=cols, outputCol="features")
+    fDf = assembler.transform(gDf)
+
+    # Use the model to make predictions
+    predict_udf = spark.udf.register(lambda features: float(model.decision_function([features.toArray()])[0]), DoubleType())
+    anomaly_udf = spark.udf.register(lambda features: int(model.predict([features.toArray()])[0]), IntegerType())
     
+    result_df = fDf.withColumn("anomaly_score", predict_udf(col("features")))
+    result_df = result_df.withColumn("anomaly", anomaly_udf(col("features")))
 
     #OUTPUT
 
     # Print to console debug
-    console = df.writeStream.outputMode("append").format("console").start()
+    console = result_df.writeStream.outputMode("append").format("console").start()
     console.awaitTermination()
 
     # Write to Elastic
