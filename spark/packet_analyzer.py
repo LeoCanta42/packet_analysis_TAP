@@ -155,7 +155,8 @@ eth_schema = StructType([
 ip_schema = StructType([
     StructField("ip_ip_src", StringType(), True),
     StructField("ip_ip_dst", StringType(), True),
-    StructField("ip_ip_proto", StringType(), True)
+    StructField("ip_ip_proto", StringType(), True),
+    StructField("ip_ip_len", StringType(), True)
 ])
 
 udp_schema = StructType([
@@ -216,27 +217,27 @@ def main():
     df = df.selectExpr("CAST(timestamp AS STRING) AS timestamp", "CAST(value AS STRING) AS value")
     df = df.select(from_json(col("value"), schema).alias("data")).select("data.*")
 
-    # TAKE POSITION FROM THE IP
-    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_dbip)
-    df = df.withColumn("src_position", get_geolocation_udf(col("layers.ip.ip_ip_src")))
-    df = df.withColumn("dst_position", get_geolocation_udf(col("layers.ip.ip_ip_dst")))
+    # # TAKE POSITION FROM THE IP
+    # get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_dbip)
+    # df = df.withColumn("src_position", get_geolocation_udf(col("layers.ip.ip_ip_src")))
+    # df = df.withColumn("dst_position", get_geolocation_udf(col("layers.ip.ip_ip_dst")))
 
-    # CHECK IF THE IP IS A THREAT
-    check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
-    df = df.withColumn("src_threat", check_ip_threat_udf(col("layers.ip.ip_ip_src")))
-    df = df.withColumn("dst_threat", check_ip_threat_udf(col("layers.ip.ip_ip_dst")))
+    # # CHECK IF THE IP IS A THREAT
+    # check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
+    # df = df.withColumn("src_threat", check_ip_threat_udf(col("layers.ip.ip_ip_src")))
+    # df = df.withColumn("dst_threat", check_ip_threat_udf(col("layers.ip.ip_ip_dst")))
 
-    # APPLICATION LAYER PROTOCOL
-    application_detection_udf = spark.udf.register("application_detection", application_detection)
-    df = df.withColumn("tcp_src_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_srcport")))
-    df = df.withColumn("tcp_dst_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_dstport")))
-    df = df.withColumn("udp_src_application_protocol", application_detection_udf(col("layers.udp.udp_udp_srcport")))
-    df = df.withColumn("udp_dst_application_protocol", application_detection_udf(col("layers.udp.udp_udp_dstport")))
+    # # APPLICATION LAYER PROTOCOL
+    # application_detection_udf = spark.udf.register("application_detection", application_detection)
+    # df = df.withColumn("tcp_src_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_srcport")))
+    # df = df.withColumn("tcp_dst_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_dstport")))
+    # df = df.withColumn("udp_src_application_protocol", application_detection_udf(col("layers.udp.udp_udp_srcport")))
+    # df = df.withColumn("udp_dst_application_protocol", application_detection_udf(col("layers.udp.udp_udp_dstport")))
 
-    # RESOLVE IP ADDRESSES TO HOSTNAMES
-    resolve_hostname_udf = spark.udf.register("resolve_hostname", resolve_hostname)
-    df = df.withColumn("src_hostname", resolve_hostname_udf(col("layers.ip.ip_ip_src")))
-    df = df.withColumn("dst_hostname", resolve_hostname_udf(col("layers.ip.ip_ip_dst")))
+    # # RESOLVE IP ADDRESSES TO HOSTNAMES
+    # resolve_hostname_udf = spark.udf.register("resolve_hostname", resolve_hostname)
+    # df = df.withColumn("src_hostname", resolve_hostname_udf(col("layers.ip.ip_ip_src")))
+    # df = df.withColumn("dst_hostname", resolve_hostname_udf(col("layers.ip.ip_ip_dst")))
 
     # ANOMALY DETECTION WITH MODEL
     
@@ -246,12 +247,17 @@ def main():
     # Convert frame_time like Feb  1 2020 03:19:45.377844893 to timestamp
     df = df.withColumn("frame_time", to_timestamp(col("layers.frame.frame_frame_time"), "MMM  d yyyy HH:mm:ss.SSSSSSSSS"))
 
+    # Add a watermark for the frame_time column
+    df = df.withWatermark("frame_time", "2 minutes")
+
     # Add unix timestamp to DataFrame
     tDf = df.withColumn("timestamp", unix_timestamp(col("frame_time")))
+    tDf = df.withColumn("layers.ip.ip_ip_len", col("layers.ip.ip_ip_len").cast(IntegerType()))
+    tDf = df.withColumn("layers.frame.frame_frame_len", col("layers.frame.frame_frame_len").cast(IntegerType()))
 
     # Group with 1 minute time, ip_src, frame_protocols and calculate matrix
     gDf = tDf.groupBy(
-        window(col("frame_time"), "1 minute").alias("time_window"),
+        window(col("frame_time"), "10 seconds").alias("time_window"),
         col("layers.ip.ip_ip_src").alias("ip_src"),
         col("layers.frame.frame_frame_protocols").alias("frame_protocols")
     ).agg(
@@ -268,8 +274,8 @@ def main():
     fDf = assembler.transform(gDf)
 
     # Use the model to make predictions
-    predict_udf = spark.udf.register(lambda features: float(model.decision_function([features.toArray()])[0]), DoubleType())
-    anomaly_udf = spark.udf.register(lambda features: int(model.predict([features.toArray()])[0]), IntegerType())
+    predict_udf = spark.udf.register("predict",lambda features: float(model.decision_function([features.toArray()])[0]), DoubleType())
+    anomaly_udf = spark.udf.register("anomaly",lambda features: int(model.predict([features.toArray()])[0]), IntegerType())
     
     result_df = fDf.withColumn("anomaly_score", predict_udf(col("features")))
     result_df = result_df.withColumn("anomaly", anomaly_udf(col("features")))
