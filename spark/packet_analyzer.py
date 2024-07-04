@@ -1,14 +1,13 @@
 from pyspark.sql import SparkSession
 from pyspark.conf import SparkConf
 from pyspark.ml.feature import VectorAssembler
-from pyspark.sql.functions import col, from_json, unix_timestamp, window, count, avg, to_timestamp
+from pyspark.sql.functions import col, from_json, window, count, avg, to_timestamp, max as spark_max, when
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType, DoubleType
 import geoip2.database
 import requests
 from ipaddress import ip_address, ip_network
-import dns.resolver
 from joblib import load
-
+import socket
 
 ################################
 # Anomaly detection with model #
@@ -52,14 +51,26 @@ def ip_to_int(ip):
         return int(ip_address(ip))
     except:
         return None
+    
+
+def get_local_ip_address():
+    try:
+        # Create a socket object
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Use Google's public DNS server to find the local IP address
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+    finally:
+        s.close()
+    return local_ip
 
 ################################
 #        Geolocation           #
 ################################
 # Take the geolocalization from the IP using local GeoLite2-DB
 def get_geolocation_geo2(ip):
-    if is_private_ip(ip):
-        return "Special or private IP Address - No Geolocation"
+    if ip is get_local_ip_address():
+        return "LOCAL"
     else:
         try:
             reader = geoip2.database.Reader('GeoLite2-City.mmdb')
@@ -100,25 +111,25 @@ def check_ip_threat(ip):
 def application_detection(port):
     # Dictionary mapping ports to application protocols
     port_protocol_map = {
-        20: 'FTP (Data)',
-        21: 'FTP (Control)',
-        22: 'SSH',
-        23: 'Telnet',
-        25: 'SMTP',
-        53: 'DNS',
-        80: 'HTTP',
-        110: 'POP3',
-        143: 'IMAP',
-        443: 'HTTPS',
-        587: 'SMTP (Secure)',
-        993: 'IMAP (Secure)',
-        995: 'POP3 (Secure)',
-        3306: 'MySQL',
-        3389: 'RDP',
-        5432: 'PostgreSQL',
-        5900: 'VNC',
-        6379: 'Redis',
-        8080: 'HTTP (Alternate)',
+        '20': 'FTP (Data)',
+        '21': 'FTP (Control)',
+        '22': 'SSH',
+        '23': 'Telnet',
+        '25': 'SMTP',
+        '53': 'DNS',
+        '80': 'HTTP',
+        '110': 'POP3',
+        '143': 'IMAP',
+        '443': 'HTTPS',
+        '587': 'SMTP (Secure)',
+        '993': 'IMAP (Secure)',
+        '995': 'POP3 (Secure)',
+        '3306': 'MySQL',
+        '3389': 'RDP',
+        '5432': 'PostgreSQL',
+        '5900': 'VNC',
+        '6379': 'Redis',
+        '8080': 'HTTP (Alternate)',
     }
     
     # Retrieve the protocol for the given port or return 'Unknown' if not found
@@ -208,9 +219,9 @@ def main():
     df = df.select(from_json(col("value"), schema).alias("data")).select("data.*")
 
     # # TAKE POSITION FROM THE IP
-    # get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_dbip)
-    # df = df.withColumn("src_position", get_geolocation_udf(col("layers.ip.ip_ip_src")))
-    # df = df.withColumn("dst_position", get_geolocation_udf(col("layers.ip.ip_ip_dst")))
+    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_geo2)
+    df = df.withColumn("src_position", get_geolocation_udf(col("layers.ip.ip_ip_src")))
+    df = df.withColumn("dst_position", get_geolocation_udf(col("layers.ip.ip_ip_dst")))
 
     # # CHECK IF THE IP IS A THREAT
     # check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
@@ -218,87 +229,55 @@ def main():
     # df = df.withColumn("dst_threat", check_ip_threat_udf(col("layers.ip.ip_ip_dst")))
 
     # # APPLICATION LAYER PROTOCOL
-    # application_detection_udf = spark.udf.register("application_detection", application_detection)
-    # df = df.withColumn("tcp_src_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_srcport")))
-    # df = df.withColumn("tcp_dst_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_dstport")))
-    # df = df.withColumn("udp_src_application_protocol", application_detection_udf(col("layers.udp.udp_udp_srcport")))
-    # df = df.withColumn("udp_dst_application_protocol", application_detection_udf(col("layers.udp.udp_udp_dstport")))
-
+    application_detection_udf = spark.udf.register("application_detection", application_detection)
+    df = df.withColumn("tcp_src_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_srcport")))
+    df = df.withColumn("tcp_dst_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_dstport")))
+    df = df.withColumn("udp_src_application_protocol", application_detection_udf(col("layers.udp.udp_udp_srcport")))
+    df = df.withColumn("udp_dst_application_protocol", application_detection_udf(col("layers.udp.udp_udp_dstport")))
 
     # ANOMALY DETECTION WITH MODEL
-
-    # Load the model
-    model = load('iforest_model.joblib')
 
     # Convert frame_time of 2024-07-04T08:08:08.675009933Z format to timestamp
     df = df.withColumn("frame_time", to_timestamp(col("layers.frame.frame_frame_time"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSSSSS'Z'"))
 
-    # Add a watermark for the frame_time column
-    df = df.withWatermark("frame_time", "1 minute")
-
     # Cast ip_ip_len and frame_frame_len to IntegerType
-    tDf = df.withColumn("frame_time",col("frame_time"))
-    tDf = df.withColumn("layers.ip.ip_ip_len", col("layers.ip.ip_ip_len").cast(IntegerType()))
-    tDf = df.withColumn("layers.frame.frame_frame_len", col("layers.frame.frame_frame_len").cast(IntegerType()))
+    df = df.withColumn("layers.ip.ip_ip_len", col("layers.ip.ip_ip_len").cast(IntegerType()))
+    df = df.withColumn("layers.frame.frame_frame_len", col("layers.frame.frame_frame_len").cast(IntegerType()))
 
     # Group with time, ip_src, frame_protocols and calculate matrix
-    # gDf = tDf.groupBy(
-    #     window(col("frame_time"), "20 seconds").alias("time_window"),
-    #     col("layers.ip.ip_ip_src").alias("ip_src"),
-    #     col("layers.frame.frame_frame_protocols").alias("frame_protocols")
-    # ).agg(
-    #     count("*").alias("count"),
-    #     avg("layers.ip.ip_ip_len").alias("ip_avg_len"),
-    #     avg("layers.frame.frame_frame_len").alias("frame_avg_len"),
-    #     (avg("layers.ip.ip_ip_len") / max("layers.ip.ip_ip_len")).alias("ip_local_anomaly"),
-    #     (avg("layers.frame.frame_frame_len") / max("layers.frame.frame_frame_len")).alias("frame_local_anomaly")
-    # ).withColumn("start", col("time_window").getItem("start")).withColumn("end", col("time_window").getItem("end"))
-    
-    # Simplified aggregation: count packets per IP source
-    gDf = tDf.withWatermark("frame_time", "1 minute"). \
-    groupBy(
-        window(col("frame_time"), "10 seconds").alias("time_window"),
-        col("layers.ip.ip_ip_src").alias("ip_src")
+    gDf = df.withWatermark("frame_time","1 minute").groupBy(
+        window("frame_time", "2 minute", "10 seconds").alias("time_window"),
+        col("layers.ip.ip_ip_src").alias("ip_src"),
+        col("layers.frame.frame_frame_protocols").alias("frame_protocols")
     ).agg(
-        count("*").alias("packet_count")
+        count("*").alias("count"),
+        avg("layers.ip.ip_ip_len").alias("ip_avg_len"),
+        spark_max("layers.ip.ip_ip_len").alias("max_ip_len"),
+        avg("layers.frame.frame_frame_len").alias("frame_avg_len"),
+        spark_max("layers.frame.frame_frame_len").alias("max_frame_len")
+    ).withColumn(
+    "ip_local_anomaly",
+        when(col("max_ip_len").isNotNull() & (col("max_ip_len") > 0), col("ip_avg_len") / col("max_ip_len")).otherwise(None)
+    ).withColumn(
+        "frame_local_anomaly",
+        when(col("max_frame_len").isNotNull() & (col("max_frame_len") > 0), col("frame_avg_len") / col("max_frame_len")).otherwise(None)
+    ).withColumn(
+        "start",
+        col("time_window").getItem("start")
+    ).withColumn(
+        "end",
+        col("time_window").getItem("end")
     )
 
-    raw_console = gDf.writeStream.outputMode("append").format("console").start()
-    raw_console.awaitTermination()
-
-    gDf = gDf.withWatermark("start", "1 minute")
-
-    # Alias DataFrames to avoid ambiguity
-    tDf_alias = tDf.alias("tDf")
-    gDf_alias = gDf.alias("gDf")
-
-    # Join tDf and gDf on ip_src, frame_protocols, frame_time (in range of start and end)
-    cond = (tDf_alias["layers.ip.ip_ip_src"] == gDf_alias["ip_src"]) & \
-              (tDf_alias["layers.frame.frame_frame_protocols"] == gDf_alias["frame_protocols"]) & \
-                (tDf_alias["frame_time"] >= gDf_alias["start"]) & \
-                (tDf_alias["frame_time"] <= gDf_alias["end"])
-    
-    jDf = tDf_alias.join(gDf_alias, cond, "left").select(
-        tDf_alias["layers.ip.ip_ip_src"],
-        tDf_alias["layers.ip.ip_ip_dst"],
-        tDf_alias["layers.ip.ip_ip_len"],
-        tDf_alias["layers.tcp.tcp_tcp_srcport"],
-        tDf_alias["layers.tcp.tcp_tcp_dstport"],
-        tDf_alias["layers.frame.frame_frame_protocols"],
-        tDf_alias["layers.frame.frame_frame_len"],
-        tDf_alias["frame_time"],
-        gDf_alias["ip_avg_len"],
-        gDf_alias["frame_avg_len"],
-        gDf_alias["ip_local_anomaly"],
-        gDf_alias["frame_local_anomaly"],
-        gDf_alias["count"]
-    )
 
     # Add feature column using VectorAssembler
     cols = ["ip_avg_len", "frame_avg_len", "ip_local_anomaly", "frame_local_anomaly", "count"]
     assembler = VectorAssembler(inputCols=cols, outputCol="features")
-    fDf = assembler.transform(jDf)
+    fDf = assembler.transform(gDf)
 
+    # Load the model
+    model = load('iforest_model.joblib')
+    
     # Use the model to make predictions
     predict_udf = spark.udf.register("predict",lambda features: float(model.decision_function([features.toArray()])[0]), DoubleType())
     anomaly_udf = spark.udf.register("anomaly",lambda features: int(model.predict([features.toArray()])[0]), IntegerType())
@@ -306,14 +285,31 @@ def main():
     result_df = fDf.withColumn("anomaly_score", predict_udf(col("features")))
     result_df = result_df.withColumn("anomaly", anomaly_udf(col("features")))
 
+    # Select the final columns
+    
+    condition = ((col("frame_time") >= col("start")) & (col("frame_time") <= col("end")) & (col("ip_src") == col("layers.ip.ip_ip_src")) & (col("frame_protocols") == col("layers.frame.frame_frame_protocols")))
+    final = df.join(result_df, condition, "inner").select(
+        col("src_position"),
+        col("dst_position"),
+        # col("src_threat"),
+        # col("dst_threat"),
+        col("tcp_src_application_protocol"),
+        col("tcp_dst_application_protocol"),
+        col("udp_src_application_protocol"),
+        col("udp_dst_application_protocol"),
+        col("frame_time"),
+        col("anomaly_score"),
+        col("anomaly")
+    )
+
     #OUTPUT
 
     # Print to console debug
-    console = result_df.writeStream.outputMode("append").format("console").start()
-    console.awaitTermination()
+    # console = final.writeStream.outputMode("append").format("console").start()
+    # console.awaitTermination()
 
     # Write to Elastic
-    elastic = df.writeStream \
+    elastic = final.writeStream \
         .option("checkpointLocation", "/tmp/") \
         .format("es") \
         .start(elastic_index)
