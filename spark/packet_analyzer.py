@@ -91,16 +91,6 @@ def check_ip_threat(ip):
     response = requests.get(url, headers=headers)
     return response.json()
     
-################################
-#       Hostname resolver      #
-################################
-
-# Resolve IP addresses to hostnames
-def resolve_hostname(ip):
-    try:
-        return dns.resolver.resolve(ip, 'PTR')[0].to_text()
-    except:
-        return "Unknown"
 
 ################################
 #    Application detection     #
@@ -234,44 +224,80 @@ def main():
     # df = df.withColumn("udp_src_application_protocol", application_detection_udf(col("layers.udp.udp_udp_srcport")))
     # df = df.withColumn("udp_dst_application_protocol", application_detection_udf(col("layers.udp.udp_udp_dstport")))
 
-    # # RESOLVE IP ADDRESSES TO HOSTNAMES
-    # resolve_hostname_udf = spark.udf.register("resolve_hostname", resolve_hostname)
-    # df = df.withColumn("src_hostname", resolve_hostname_udf(col("layers.ip.ip_ip_src")))
-    # df = df.withColumn("dst_hostname", resolve_hostname_udf(col("layers.ip.ip_ip_dst")))
 
     # ANOMALY DETECTION WITH MODEL
-    
+
     # Load the model
     model = load('iforest_model.joblib')
 
-    # Convert frame_time like Feb  1 2020 03:19:45.377844893 to timestamp
-    df = df.withColumn("frame_time", to_timestamp(col("layers.frame.frame_frame_time"), "MMM  d yyyy HH:mm:ss.SSSSSSSSS"))
+    # Convert frame_time of 2024-07-04T08:08:08.675009933Z format to timestamp
+    df = df.withColumn("frame_time", to_timestamp(col("layers.frame.frame_frame_time"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSSSSS'Z'"))
 
     # Add a watermark for the frame_time column
-    df = df.withWatermark("frame_time", "2 minutes")
+    df = df.withWatermark("frame_time", "1 minute")
 
-    # Add unix timestamp to DataFrame
-    tDf = df.withColumn("timestamp", unix_timestamp(col("frame_time")))
+    # Cast ip_ip_len and frame_frame_len to IntegerType
+    tDf = df.withColumn("frame_time",col("frame_time"))
     tDf = df.withColumn("layers.ip.ip_ip_len", col("layers.ip.ip_ip_len").cast(IntegerType()))
     tDf = df.withColumn("layers.frame.frame_frame_len", col("layers.frame.frame_frame_len").cast(IntegerType()))
 
-    # Group with 1 minute time, ip_src, frame_protocols and calculate matrix
-    gDf = tDf.groupBy(
+    # Group with time, ip_src, frame_protocols and calculate matrix
+    # gDf = tDf.groupBy(
+    #     window(col("frame_time"), "20 seconds").alias("time_window"),
+    #     col("layers.ip.ip_ip_src").alias("ip_src"),
+    #     col("layers.frame.frame_frame_protocols").alias("frame_protocols")
+    # ).agg(
+    #     count("*").alias("count"),
+    #     avg("layers.ip.ip_ip_len").alias("ip_avg_len"),
+    #     avg("layers.frame.frame_frame_len").alias("frame_avg_len"),
+    #     (avg("layers.ip.ip_ip_len") / max("layers.ip.ip_ip_len")).alias("ip_local_anomaly"),
+    #     (avg("layers.frame.frame_frame_len") / max("layers.frame.frame_frame_len")).alias("frame_local_anomaly")
+    # ).withColumn("start", col("time_window").getItem("start")).withColumn("end", col("time_window").getItem("end"))
+    
+    # Simplified aggregation: count packets per IP source
+    gDf = tDf.withWatermark("frame_time", "1 minute"). \
+    groupBy(
         window(col("frame_time"), "10 seconds").alias("time_window"),
-        col("layers.ip.ip_ip_src").alias("ip_src"),
-        col("layers.frame.frame_frame_protocols").alias("frame_protocols")
+        col("layers.ip.ip_ip_src").alias("ip_src")
     ).agg(
-        count("*").alias("count"),
-        avg("layers.ip.ip_ip_len").alias("ip_avg_len"),
-        avg("layers.frame.frame_frame_len").alias("frame_avg_len"),
-        (avg("layers.ip.ip_ip_len") / max("layers.ip.ip_ip_len")).alias("ip_local_anomaly"),
-        (avg("layers.frame.frame_frame_len") / max("layers.frame.frame_frame_len")).alias("frame_local_anomaly")
-    ).withColumn("start", col("time_window").getItem("start")).withColumn("end", col("time_window").getItem("end"))
+        count("*").alias("packet_count")
+    )
+
+    raw_console = gDf.writeStream.outputMode("append").format("console").start()
+    raw_console.awaitTermination()
+
+    gDf = gDf.withWatermark("start", "1 minute")
+
+    # Alias DataFrames to avoid ambiguity
+    tDf_alias = tDf.alias("tDf")
+    gDf_alias = gDf.alias("gDf")
+
+    # Join tDf and gDf on ip_src, frame_protocols, frame_time (in range of start and end)
+    cond = (tDf_alias["layers.ip.ip_ip_src"] == gDf_alias["ip_src"]) & \
+              (tDf_alias["layers.frame.frame_frame_protocols"] == gDf_alias["frame_protocols"]) & \
+                (tDf_alias["frame_time"] >= gDf_alias["start"]) & \
+                (tDf_alias["frame_time"] <= gDf_alias["end"])
+    
+    jDf = tDf_alias.join(gDf_alias, cond, "left").select(
+        tDf_alias["layers.ip.ip_ip_src"],
+        tDf_alias["layers.ip.ip_ip_dst"],
+        tDf_alias["layers.ip.ip_ip_len"],
+        tDf_alias["layers.tcp.tcp_tcp_srcport"],
+        tDf_alias["layers.tcp.tcp_tcp_dstport"],
+        tDf_alias["layers.frame.frame_frame_protocols"],
+        tDf_alias["layers.frame.frame_frame_len"],
+        tDf_alias["frame_time"],
+        gDf_alias["ip_avg_len"],
+        gDf_alias["frame_avg_len"],
+        gDf_alias["ip_local_anomaly"],
+        gDf_alias["frame_local_anomaly"],
+        gDf_alias["count"]
+    )
 
     # Add feature column using VectorAssembler
     cols = ["ip_avg_len", "frame_avg_len", "ip_local_anomaly", "frame_local_anomaly", "count"]
     assembler = VectorAssembler(inputCols=cols, outputCol="features")
-    fDf = assembler.transform(gDf)
+    fDf = assembler.transform(jDf)
 
     # Use the model to make predictions
     predict_udf = spark.udf.register("predict",lambda features: float(model.decision_function([features.toArray()])[0]), DoubleType())
