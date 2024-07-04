@@ -202,7 +202,8 @@ def main():
     # ELASTIC CONF
     elastic_index = "packets"
     sparkConf = SparkConf().set("es.nodes", "elasticsearch") \
-                            .set("es.port", "9200")
+                            .set("es.port", "9200")\
+                            .set("es.index.auto.create", "true")
 
     # INITIALIZE SPARKSESSION
     spark = SparkSession.builder.appName("KafkaSparkIntegration").config(conf=sparkConf).getOrCreate()
