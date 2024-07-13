@@ -49,6 +49,18 @@ services:
   #     KAFKA_CLUSTERS_0_NAME: "local"
   #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "PLAINTEXT://kafkaserver:9092"
 
+  # spark-train:
+  #   hostname: spark-train
+  #   build: ./spark
+  #   depends_on:
+  #     init-kafka:
+  #       condition: service_completed_successfully
+  #   volumes:
+  #     - type: bind
+  #       source: ./anomaly_detection/spark-work-dir/
+  #       target: /opt/spark/work-dir/
+  #     - ./anomaly_detection/train_model_KMEANS.py:/opt/spark/work-dir/train_model_KMEANS.py
+  #   command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0 /opt/spark/work-dir/train_model_KMEANS.py"
   spark:
     hostname: spark
     build: ./spark
@@ -58,12 +70,11 @@ services:
       elasticsearch:
         condition: service_started
     volumes:
-      - ./spark/packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
+      - ./spark/packet_analyzer_KMEANS.py:/opt/spark/work-dir/packet_analyzer.py
       - ./spark/abuseipdb.key:/opt/spark/work-dir/abuseipdb.key
       - ./spark/ipinfotoken.key:/opt/spark/work-dir/ipinfotoken.key
-      - ./spark/GeoLite2-City.mmdb:/opt/spark/work-dir/GeoLite2-City.mmdb
-      # - ./spark/GeoLite2-Country.mmdb:/opt/spark/work-dir/GeoLite2-Country.mmdb
-      - ./anomaly_detection/iforest_model.joblib:/opt/spark/work-dir/iforest_model.joblib
+      - ./anomaly_detection/kmeans_model.pkl:/opt/spark/work-dir/kmeans_model.pkl
+      - ./anomaly_detection/scaler_model.pkl:/opt/spark/work-dir/scaler_model.pkl
     command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/work-dir/packet_analyzer.py"
   elasticsearch:
     hostname: elasticsearch

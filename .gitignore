@@ -3,4 +3,5 @@
 .venv
 packets.log
 *.joblib
+*.pkl
 test_data.csv
