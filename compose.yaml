@@ -75,6 +75,7 @@ services:
       - ./spark/ipinfotoken.key:/opt/spark/work-dir/ipinfotoken.key
       - ./anomaly_detection/kmeans_model.pkl:/opt/spark/work-dir/kmeans_model.pkl
       - ./anomaly_detection/scaler_model.pkl:/opt/spark/work-dir/scaler_model.pkl
+      - ./anomaly_detection/feature_names.pkl:/opt/spark/work-dir/feature_names.pkl
     command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/work-dir/packet_analyzer.py"
   elasticsearch:
     hostname: elasticsearch

@@ -14,7 +14,7 @@ def parse_json(log_file):
             data.append(json.loads(line))
     return data
 
-data = parse_json('../packets.log')
+data = parse_json('packets.log')
 
 # Extract features
 features = []
@@ -27,7 +27,6 @@ for packet in data:
     udp = layer.get('udp', None)  # Use None as default if missing
 
     frame_len = int(frame.get('frame_frame_len', 0))
-    protocols = frame.get('frame_frame_protocols', '').split(':')
     ip_len = int(ip.get('ip_ip_len', 0))
     ip_proto = int(ip.get('ip_ip_proto', 0)) if ip.get('ip_ip_proto') else 0
 
@@ -48,6 +47,8 @@ df = pd.DataFrame(features, columns=['frame_len', 'ip_len', 'ip_proto', 'tcp_src
 # Fill missing values with 0
 df.fillna(0, inplace=True)
 
+#Save the columns name
+feature_names = df.columns.tolist()
 # Normalize the data
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df)
@@ -59,4 +60,5 @@ kmeans.fit(X_scaled)
 
 # Save the models for later use
 joblib.dump(scaler, 'scaler_model.pkl')
+joblib.dump(feature_names, 'feature_names.pkl')
 joblib.dump(kmeans, 'kmeans_model.pkl')
