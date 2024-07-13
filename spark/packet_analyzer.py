@@ -238,25 +238,22 @@ def main():
     df = df.withColumn("src_port", when(col("layers.tcp.tcp_tcp_srcport").isNotNull(), col("layers.tcp.tcp_tcp_srcport")).otherwise(col("layers.udp.udp_udp_srcport")))
     df = df.withColumn("dst_port", when(col("layers.tcp.tcp_tcp_dstport").isNotNull(), col("layers.tcp.tcp_tcp_dstport")).otherwise(col("layers.udp.udp_udp_dstport")))
 
-    # # TAKE POSITION FROM THE IP
-    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_ipinfo)
-    df = df.withColumn("src_position", get_geolocation_udf(col("ip_src")))
-    df = df.withColumn("dst_position", get_geolocation_udf(col("ip_dst")))
+    # TAKE POSITION FROM THE IP
+    # get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_ipinfo)
+    # df = df.withColumn("src_position", get_geolocation_udf(col("ip_src")))
+    # df = df.withColumn("dst_position", get_geolocation_udf(col("ip_dst")))
 
     # CHECK IF THE IP IS A THREAT
-    check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
-    df = df.withColumn("src_threat", check_ip_threat_udf(col("ip_src")))
-    df = df.withColumn("dst_threat", check_ip_threat_udf(col("ip_dst")))
+    # check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
+    # df = df.withColumn("src_threat", check_ip_threat_udf(col("ip_src")))
+    # df = df.withColumn("dst_threat", check_ip_threat_udf(col("ip_dst")))
 
-    # # APPLICATION LAYER PROTOCOL
+    # APPLICATION LAYER PROTOCOL
     application_detection_udf = spark.udf.register("application_detection", application_detection)
-    df = df.withColumn("src_application_protocol", application_detection_udf(col("src_port")))
-    df = df.withColumn("dst_application_protocol", application_detection_udf(col("dst_port")))
+    # df = df.withColumn("src_application_protocol", application_detection_udf(col("src_port")))
+    # df = df.withColumn("dst_application_protocol", application_detection_udf(col("dst_port")))
 
-    df = df.withColumn("application_protocol", when(col("src_application_protocol")!="Unknown", col("src_application_protocol")).otherwise(col("dst_application_protocol")))
-
-    console = df.writeStream.outputMode("append").format("console").start()
-    console.awaitTermination()
+    df = df.withColumn("application_protocol", when(application_detection_udf(col("src_port"))!="Unknown", application_detection_udf(col("src_port"))).otherwise(application_detection_udf(col("dst_port"))))
                                                                                    
     # ANOMALY DETECTION WITH MODEL
 
@@ -264,25 +261,26 @@ def main():
     df = df.withColumn("frame_time", to_timestamp(col("layers.frame.frame_frame_time"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSSSSS'Z'"))
 
     # Cast ip_ip_len and frame_frame_len to IntegerType
-    df = df.withColumn("layers.ip.ip_ip_len", col("layers.ip.ip_ip_len").cast(IntegerType()))
-    df = df.withColumn("layers.frame.frame_frame_len", col("layers.frame.frame_frame_len").cast(IntegerType()))
+    df = df.withColumn("ip_len", col("layers.ip.ip_ip_len").cast(IntegerType()))
+    df = df.withColumn("frame_len", col("layers.frame.frame_frame_len").cast(IntegerType()))
+
+
     # Group with time, ip_src, frame_protocols and calculate matrix
-    gDf = df.withWatermark("frame_time","1 minute").groupBy(
-        window("frame_time", "2 minute", "10 seconds").alias("time_window"),
-        col("layers.ip.ip_ip_src").alias("ip_src"),
+    gDf = df.withWatermark("frame_time","10 seconds").groupBy(
+        window("frame_time", "15 seconds", "5 seconds").alias("time_window"),
         col("layers.frame.frame_frame_protocols").alias("frame_protocols")
     ).agg(
         count("*").alias("count"),
-        avg("layers.ip.ip_ip_len").alias("ip_avg_len"),
-        spark_max("layers.ip.ip_ip_len").alias("max_ip_len"),
-        avg("layers.frame.frame_frame_len").alias("frame_avg_len"),
-        spark_max("layers.frame.frame_frame_len").alias("max_frame_len")
+        avg("ip_len").alias("ip_avg_len"),
+        spark_max("ip_len").alias("max_ip_len"),
+        avg("frame_len").alias("frame_avg_len"),
+        spark_max("frame_len").alias("max_frame_len")
     ).withColumn(
     "ip_local_anomaly",
-        when(col("max_ip_len").isNotNull() & (col("max_ip_len") > 0), col("ip_avg_len") / col("max_ip_len")).otherwise(None)
+        when(col("max_ip_len").isNotNull() & (col("max_ip_len") > 0), col("ip_avg_len") / col("max_ip_len")).otherwise("")
     ).withColumn(
         "frame_local_anomaly",
-        when(col("max_frame_len").isNotNull() & (col("max_frame_len") > 0), col("frame_avg_len") / col("max_frame_len")).otherwise(None)
+        when(col("max_frame_len").isNotNull() & (col("max_frame_len") > 0), col("frame_avg_len") / col("max_frame_len")).otherwise("")
     ).withColumn(
         "start",
         col("time_window").getItem("start")
@@ -291,7 +289,8 @@ def main():
         col("time_window").getItem("end")
     )
 
-
+    console = gDf.writeStream.outputMode("update").format("console").start()
+    console.awaitTermination()
     # Add feature column using VectorAssembler
     cols = ["ip_avg_len", "frame_avg_len", "ip_local_anomaly", "frame_local_anomaly", "count"]
     assembler = VectorAssembler(inputCols=cols, outputCol="features")
