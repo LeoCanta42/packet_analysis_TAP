@@ -60,6 +60,7 @@ services:
     volumes:
       - ./spark/packet_analyzer.py:/opt/spark/work-dir/packet_analyzer.py
       - ./spark/abuseipdb.key:/opt/spark/work-dir/abuseipdb.key
+      - ./spark/ipinfotoken.key:/opt/spark/work-dir/ipinfotoken.key
       - ./spark/GeoLite2-City.mmdb:/opt/spark/work-dir/GeoLite2-City.mmdb
       # - ./spark/GeoLite2-Country.mmdb:/opt/spark/work-dir/GeoLite2-Country.mmdb
       - ./anomaly_detection/iforest_model.joblib:/opt/spark/work-dir/iforest_model.joblib

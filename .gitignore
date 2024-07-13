@@ -1,6 +1,6 @@
 *.key
 *.mmdb
 .venv
-*.log
+packets.log
 *.joblib
 test_data.csv

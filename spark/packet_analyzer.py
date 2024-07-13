@@ -17,6 +17,8 @@ import socket
 #   IP type classification     #
 ################################
 
+LOCAL_IP="192.168.3.105"
+
 # Define private IP ranges
 private_ipv4_ranges = [
     ip_network('10.0.0.0/8'),
@@ -53,23 +55,12 @@ def ip_to_int(ip):
         return None
     
 
-def get_local_ip_address():
-    try:
-        # Create a socket object
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Use Google's public DNS server to find the local IP address
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-    finally:
-        s.close()
-    return local_ip
-
 ################################
 #        Geolocation           #
 ################################
 # Take the geolocalization from the IP using local GeoLite2-DB
 def get_geolocation_geo2(ip):
-    if ip is get_local_ip_address():
+    if ip==LOCAL_IP:
         return "LOCAL"
     else:
         try:
@@ -81,12 +72,31 @@ def get_geolocation_geo2(ip):
 
 # Take the geolocalization from the IP using db-ip.com
 def get_geolocation_dbip(ip):
-    if is_private_ip(ip):
-        return "Special or private IP Address - No Geolocation"
+    if ip==LOCAL_IP:
+        return "LOCAL"
     else:
         url = f"https://api.db-ip.com/v2/free/{ip}"
         response = requests.get(url)
         return response.json()
+    
+def get_geolocation_ipapi(ip):
+    if ip==LOCAL_IP:
+        return "LOCAL"
+    else:
+        url =f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,org"
+        response = requests.get(url)
+        return response.json().get("regionName")
+    
+def get_geolocation_ipinfo(ip):
+    if ip==LOCAL_IP:
+        return "LOCAL"
+    else:
+        with open('ipinfotoken.key', 'r') as file:
+            token = file.read().replace('\n', '')
+            url = f"https://ipinfo.io/{ip}?token={token}"
+            response = requests.get(url)
+            return response.json().get("region")
+
 
 ################################
 #        IP Threat             #
@@ -94,13 +104,16 @@ def get_geolocation_dbip(ip):
 
 # Check if the IP is a threat
 def check_ip_threat(ip):
-    #open a file to get the key
-    with open('abuseipdb.key', 'r') as file:
-        key = file.read().replace('\n', '')
-    url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
-    headers = {'Key': key, 'Accept': 'application/json'}
-    response = requests.get(url, headers=headers)
-    return response.json()
+    if ip==LOCAL_IP:
+        return "LOCAL"
+    else:
+        #open a file to get the key
+        with open('abuseipdb.key', 'r') as file:
+            key = file.read().replace('\n', '')
+        url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
+        headers = {'Key': key, 'Accept': 'application/json'}
+        response = requests.get(url, headers=headers)
+        return response.json().get("data").get("abuseConfidenceScore") > 50
     
 
 ################################
@@ -219,23 +232,32 @@ def main():
     df = df.selectExpr("CAST(timestamp AS STRING) AS timestamp", "CAST(value AS STRING) AS value")
     df = df.select(from_json(col("value"), schema).alias("data")).select("data.*")
 
-    # # TAKE POSITION FROM THE IP
-    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_geo2)
-    df = df.withColumn("src_position", get_geolocation_udf(col("layers.ip.ip_ip_src")))
-    df = df.withColumn("dst_position", get_geolocation_udf(col("layers.ip.ip_ip_dst")))
+    # BASE DATA
+    df = df.withColumn("ip_src", col("layers.ip.ip_ip_src").cast("string"))
+    df = df.withColumn("ip_dst", col("layers.ip.ip_ip_dst").cast("string"))
+    df = df.withColumn("src_port", when(col("layers.tcp.tcp_tcp_srcport").isNotNull(), col("layers.tcp.tcp_tcp_srcport")).otherwise(col("layers.udp.udp_udp_srcport")))
+    df = df.withColumn("dst_port", when(col("layers.tcp.tcp_tcp_dstport").isNotNull(), col("layers.tcp.tcp_tcp_dstport")).otherwise(col("layers.udp.udp_udp_dstport")))
 
-    # # CHECK IF THE IP IS A THREAT
-    # check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
-    # df = df.withColumn("src_threat", check_ip_threat_udf(col("layers.ip.ip_ip_src")))
-    # df = df.withColumn("dst_threat", check_ip_threat_udf(col("layers.ip.ip_ip_dst")))
+    # # TAKE POSITION FROM THE IP
+    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_ipinfo)
+    df = df.withColumn("src_position", get_geolocation_udf(col("ip_src")))
+    df = df.withColumn("dst_position", get_geolocation_udf(col("ip_dst")))
+
+    # CHECK IF THE IP IS A THREAT
+    check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
+    df = df.withColumn("src_threat", check_ip_threat_udf(col("ip_src")))
+    df = df.withColumn("dst_threat", check_ip_threat_udf(col("ip_dst")))
 
     # # APPLICATION LAYER PROTOCOL
     application_detection_udf = spark.udf.register("application_detection", application_detection)
-    df = df.withColumn("tcp_src_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_srcport")))
-    df = df.withColumn("tcp_dst_application_protocol", application_detection_udf(col("layers.tcp.tcp_tcp_dstport")))
-    df = df.withColumn("udp_src_application_protocol", application_detection_udf(col("layers.udp.udp_udp_srcport")))
-    df = df.withColumn("udp_dst_application_protocol", application_detection_udf(col("layers.udp.udp_udp_dstport")))
+    df = df.withColumn("src_application_protocol", application_detection_udf(col("src_port")))
+    df = df.withColumn("dst_application_protocol", application_detection_udf(col("dst_port")))
 
+    df = df.withColumn("application_protocol", when(col("src_application_protocol")!="Unknown", col("src_application_protocol")).otherwise(col("dst_application_protocol")))
+
+    console = df.writeStream.outputMode("append").format("console").start()
+    console.awaitTermination()
+                                                                                   
     # ANOMALY DETECTION WITH MODEL
 
     # Convert frame_time of 2024-07-04T08:08:08.675009933Z format to timestamp
@@ -244,7 +266,6 @@ def main():
     # Cast ip_ip_len and frame_frame_len to IntegerType
     df = df.withColumn("layers.ip.ip_ip_len", col("layers.ip.ip_ip_len").cast(IntegerType()))
     df = df.withColumn("layers.frame.frame_frame_len", col("layers.frame.frame_frame_len").cast(IntegerType()))
-
     # Group with time, ip_src, frame_protocols and calculate matrix
     gDf = df.withWatermark("frame_time","1 minute").groupBy(
         window("frame_time", "2 minute", "10 seconds").alias("time_window"),
@@ -306,8 +327,8 @@ def main():
     #OUTPUT
 
     # Print to console debug
-    # console = final.writeStream.outputMode("append").format("console").start()
-    # console.awaitTermination()
+    console = final.writeStream.outputMode("append").format("console").start()
+    console.awaitTermination()
 
     # Write to Elastic
     elastic = final.writeStream \
