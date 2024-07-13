@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import unix_timestamp, window, col, count, avg, max, to_timestamp
+from pyspark.sql.functions import unix_timestamp, window, col, count, avg, max as spark_max, to_timestamp
 from pyspark.ml.feature import VectorAssembler
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType
 import numpy as np
@@ -52,8 +52,8 @@ gDf = tDf.groupBy(
     count("*").alias("count"),
     avg("ip_len").alias("ip_avg_len"),
     avg("frame_len").alias("frame_avg_len"),
-    (avg("ip_len") / max("ip_len")).alias("ip_local_anomaly"),
-    (avg("frame_len") / max("frame_len")).alias("frame_local_anomaly")
+    (avg("ip_len") / spark_max("ip_len")).alias("ip_local_anomaly"),
+    (avg("frame_len") / spark_max("frame_len")).alias("frame_local_anomaly")
 ).withColumn("start", col("time_window").getItem("start")).withColumn("end", col("time_window").getItem("end"))
 
 gDf.printSchema()
@@ -134,7 +134,7 @@ test_pdf["timestamp"] = test_data.select("timestamp").toPandas()
 test_pdf["features"] = test_data.select("features").toPandas()
 
 # Save the test data with predicted label and outlier score
-# test_pdf.to_csv("test_data.csv", index=False)
+test_pdf.to_csv("test_data.csv", index=False)
 
 # Save the model
 dump(model, "iforest_model.joblib")
