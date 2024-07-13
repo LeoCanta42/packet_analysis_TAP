@@ -277,10 +277,10 @@ def main():
         spark_max("frame_len").alias("max_frame_len")
     ).withColumn(
     "ip_local_anomaly",
-        when(col("max_ip_len").isNotNull() & (col("max_ip_len") > 0), col("ip_avg_len") / col("max_ip_len")).otherwise("")
+        when(col("max_ip_len").isNotNull() & (col("max_ip_len") > 0), col("ip_avg_len") / col("max_ip_len")).otherwise(None)
     ).withColumn(
         "frame_local_anomaly",
-        when(col("max_frame_len").isNotNull() & (col("max_frame_len") > 0), col("frame_avg_len") / col("max_frame_len")).otherwise("")
+        when(col("max_frame_len").isNotNull() & (col("max_frame_len") > 0), col("frame_avg_len") / col("max_frame_len")).otherwise(None)
     ).withColumn(
         "start",
         col("time_window").getItem("start")
@@ -288,12 +288,10 @@ def main():
         "end",
         col("time_window").getItem("end")
     )
-
-    console = gDf.writeStream.outputMode("update").format("console").start()
-    console.awaitTermination()
     # Add feature column using VectorAssembler
     cols = ["ip_avg_len", "frame_avg_len", "ip_local_anomaly", "frame_local_anomaly", "count"]
     assembler = VectorAssembler(inputCols=cols, outputCol="features")
+    assembler.setHandleInvalid("skip") # Skip rows with null values or errors
     fDf = assembler.transform(gDf)
 
     # Load the model
@@ -306,18 +304,16 @@ def main():
     result_df = fDf.withColumn("anomaly_score", predict_udf(col("features")))
     result_df = result_df.withColumn("anomaly", anomaly_udf(col("features")))
 
+
     # Select the final columns
     
-    condition = ((col("frame_time") >= col("start")) & (col("frame_time") <= col("end")) & (col("ip_src") == col("layers.ip.ip_ip_src")) & (col("frame_protocols") == col("layers.frame.frame_frame_protocols")))
+    condition = ((col("frame_time") >= col("start")) & (col("frame_time") <= col("end")) & (col("frame_protocols") == col("layers.frame.frame_frame_protocols")))
     final = df.join(result_df, condition, "inner").select(
-        col("src_position"),
-        col("dst_position"),
+        # col("src_position"),
+        # col("dst_position"),
         # col("src_threat"),
         # col("dst_threat"),
-        col("tcp_src_application_protocol"),
-        col("tcp_dst_application_protocol"),
-        col("udp_src_application_protocol"),
-        col("udp_dst_application_protocol"),
+        col("application_protocol"),
         col("frame_time"),
         col("anomaly_score"),
         col("anomaly")
