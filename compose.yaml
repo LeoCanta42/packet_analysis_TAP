@@ -7,14 +7,14 @@ services:
       - ./packets.log:/usr/share/logstash/packets.log
     environment:
       XPACK_MONITORING_ENABLED: "false"
-
+  ##
   zookeeper:
     hostname: zookeeper
     image: "confluentinc/cp-zookeeper:latest"
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-
+  ##
   kafkaserver:
     hostname: kafkaserver
     image: "confluentinc/cp-kafka:latest"
@@ -25,7 +25,7 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafkaserver:9092
       KAFKA_DEFAULT_REPLICATION_FACTOR: 1
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-
+  ##
   init-kafka:
     image: "confluentinc/cp-kafka:latest"
     depends_on:
@@ -38,6 +38,7 @@ services:
       echo -e 'Successfully created the following topics:'
       kafka-topics --bootstrap-server kafkaserver:9092 --list
       "
+  ##
   # kafkaui:
   #   hostname: kafkaui
   #   image: "provectuslabs/kafka-ui:latest"
@@ -48,19 +49,7 @@ services:
   #   environment:
   #     KAFKA_CLUSTERS_0_NAME: "local"
   #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "PLAINTEXT://kafkaserver:9092"
-
-  # spark-train:
-  #   hostname: spark-train
-  #   build: ./spark
-  #   depends_on:
-  #     init-kafka:
-  #       condition: service_completed_successfully
-  #   volumes:
-  #     - type: bind
-  #       source: ./anomaly_detection/spark-work-dir/
-  #       target: /opt/spark/work-dir/
-  #     - ./anomaly_detection/train_model_KMEANS.py:/opt/spark/work-dir/train_model_KMEANS.py
-  #   command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0 /opt/spark/work-dir/train_model_KMEANS.py"
+  ##
   spark:
     hostname: spark
     build: ./spark
@@ -70,13 +59,15 @@ services:
       elasticsearch:
         condition: service_started
     volumes:
-      - ./spark/packet_analyzer_KMEANS.py:/opt/spark/work-dir/packet_analyzer.py
+      - ./spark/packet_analyzer_FULL.py:/opt/spark/work-dir/packet_analyzer.py
       - ./spark/abuseipdb.key:/opt/spark/work-dir/abuseipdb.key
       - ./spark/ipinfotoken.key:/opt/spark/work-dir/ipinfotoken.key
       - ./anomaly_detection/kmeans_model.pkl:/opt/spark/work-dir/kmeans_model.pkl
       - ./anomaly_detection/scaler_model.pkl:/opt/spark/work-dir/scaler_model.pkl
       - ./anomaly_detection/feature_names.pkl:/opt/spark/work-dir/feature_names.pkl
-    command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/work-dir/packet_analyzer.py"
+    # command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/work-dir/packet_analyzer.py"
+    command: "/opt/spark/run-spark.sh"
+    ##
   elasticsearch:
     hostname: elasticsearch
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
@@ -86,6 +77,7 @@ services:
     mem_limit: 4 GB
     ports:
       - 9200:9200
+  ##
   kibana:
     hostname: kibana
     image: docker.elastic.co/kibana/kibana:8.13.4
@@ -95,6 +87,4 @@ services:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     ports:
       - 5601:5601
-  #Command to run the services
-  # docker-compose up -d
-  # docker-compose down
+  ##
