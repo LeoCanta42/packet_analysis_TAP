@@ -2,9 +2,8 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 import json
-import joblib
+import matplotlib.pyplot as plt
 
-print("Training the model...")
 # Load and parse the data
 def parse_json(log_file):
     with open(log_file, 'r') as file:
@@ -15,11 +14,9 @@ def parse_json(log_file):
             data.append(json.loads(line))
     return data
 
-print("Parsing the data...")
 data = parse_json('packets.log')
 
 # Extract features
-print("Extracting features...")
 features = []
 for packet in data:
     layer = packet['layers']
@@ -56,13 +53,15 @@ feature_names = df.columns.tolist()
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df)
 
-# Train the K-Means model
-k = 5  # Choose an appropriate value for k (using the elbow method in KMEANS_findK.py)
-kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-kmeans.fit(X_scaled)
+inertia = []
+K = range(1, 10)
+for k in K:
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10).fit(X_scaled)
+    inertia.append(kmeans.inertia_)
 
-print("Model trained with {} clusters. Saving...".format(k))
-# Save the models for later use
-joblib.dump(scaler, 'scaler_model.pkl')
-joblib.dump(feature_names, 'feature_names.pkl')
-joblib.dump(kmeans, 'kmeans_model.pkl')
+plt.figure(figsize=(8, 5))
+plt.plot(K, inertia, 'bx-')
+plt.xlabel('k')
+plt.ylabel('Inertia')
+plt.title('Elbow Method For Optimal k')
+plt.show()
