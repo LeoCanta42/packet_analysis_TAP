@@ -16,7 +16,6 @@ import requests
 LOCAL_IP="192.168.3.105"
 ELASTIC_INDEX = "packets"
 
-
 ################################
 # Anomaly detection with model #
 ################################
@@ -68,7 +67,7 @@ def get_geolocation_dbip(ip):
     else:
         url = f"https://api.db-ip.com/v2/free/{ip}"
         response = requests.get(url)
-        return response.json()
+        return response.json().get("stateProv")
     
 # Take the geolocalization from the IP using ip-api.com
 def get_geolocation_ipapi(ip):
@@ -84,11 +83,14 @@ def get_geolocation_ipinfo(ip):
     if ip==LOCAL_IP:
         return "LOCAL"
     else:
-        with open('ipinfotoken.key', 'r') as file:
-            token = file.read().replace('\n', '')
-            url = f"https://ipinfo.io/{ip}?token={token}"
-            response = requests.get(url)
-            return response.json().get("region")
+        try:
+            with open('ipinfotoken.key', 'r') as file:
+                token = file.read().replace('\n', '')
+                url = f"https://ipinfo.io/{ip}?token={token}"
+                response = requests.get(url)
+                return response.json().get("region")
+        except:
+            return "ERROR"
 
 
 ################################
@@ -100,13 +102,16 @@ def check_ip_threat(ip):
     if ip==LOCAL_IP:
         return "LOCAL"
     else:
-        #open a file to get the key
-        with open('abuseipdb.key', 'r') as file:
-            key = file.read().replace('\n', '')
-        url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
-        headers = {'Key': key, 'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-        return response.json().get("data").get("abuseConfidenceScore") > 50
+        try:
+            #open a file to get the key
+            with open('abuseipdb.key', 'r') as file:
+                key = file.read().replace('\n', '')
+            url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
+            headers = {'Key': key, 'Accept': 'application/json'}
+            response = requests.get(url, headers=headers)
+            return response.json().get("data").get("abuseConfidenceScore") > 50
+        except:
+            return "ERROR"
     
 
 ################################
@@ -141,6 +146,42 @@ def application_detection(port):
     # Retrieve the protocol for the given port or return 'Unknown' if not found
     return port_protocol_map.get(port, 'Unknown')
 
+def application_extraction(protocols_list):
+    protocols = protocols_list.split(":")
+    for protocol in protocols:
+        if protocol == "http":
+            return "HTTP"
+        elif protocol == "tls":
+            return "HTTPS"
+        elif protocol == "dns":
+            return "DNS"
+        elif protocol == "smtp":
+            return "SMTP"
+        elif protocol == "ftp":
+            return "FTP"
+        elif protocol == "pop3":
+            return "POP3"
+        elif protocol == "imap":
+            return "IMAP"
+        elif protocol == "ssh":
+            return "SSH"
+        elif protocol == "telnet":
+            return "Telnet"
+        elif protocol == "mysql":
+            return "MySQL"
+        elif protocol == "rdp":
+            return "RDP"
+        elif protocol == "postgresql":
+            return "PostgreSQL"
+        elif protocol == "vnc":
+            return "VNC"
+        elif protocol == "redis":
+            return "Redis"
+        elif protocol == "ftp":
+            return "FTP"
+        elif protocol == "icmp":
+            return "ICMP"
+    return "Unknown"
 
 ################################
 #    Defining packet schema    #
@@ -230,18 +271,22 @@ def main():
     parsed_df = parsed_df.withColumn("dst_port", when(col("layers.tcp.tcp_tcp_dstport").isNotNull(), col("layers.tcp.tcp_tcp_dstport")).otherwise(col("layers.udp.udp_udp_dstport")))
 
     # TAKE POSITION FROM THE IP
-    # get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_ipinfo)
+    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_ipinfo)
     # parsed_df = parsed_df.withColumn("src_position", get_geolocation_udf(col("ip_src")))
     # parsed_df = parsed_df.withColumn("dst_position", get_geolocation_udf(col("ip_dst")))
 
     # CHECK IF THE IP IS A THREAT
-    # check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
+    check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
     # parsed_df = parsed_df.withColumn("src_threat", check_ip_threat_udf(col("ip_src")))
     # parsed_df = parsed_df.withColumn("dst_threat", check_ip_threat_udf(col("ip_dst")))
 
     # APPLICATION LAYER PROTOCOL
     application_detection_udf = spark.udf.register("application_detection", application_detection)
     parsed_df = parsed_df.withColumn("application_protocol", when(application_detection_udf(col("src_port"))!="Unknown", application_detection_udf(col("src_port"))).otherwise(application_detection_udf(col("dst_port"))))
+    
+    #To ensure that application protocol is detected we also try in another way from frame protocols
+    application_extraction_udf = spark.udf.register("application_extraction", application_extraction)
+    parsed_df = parsed_df.withColumn("application_protocol", when(col("application_protocol")=="Unknown",application_extraction_udf(col("layers.frame.frame_frame_protocols"))).otherwise(col("application_protocol"))) 
 
     # ANOMALY DETECTION WITH MODEL
 
@@ -263,17 +308,21 @@ def main():
     predictions_df = vectorized_df.withColumn("prediction", predict_and_distance_udf(col("features_vec")))
 
     # Define a threshold and anomalies
-    threshold = 3.0  # Maximum normal traffic is near 2.49 (3.0 should be good)  
+    threshold = 2.6  # Maximum normal traffic is near 2.49 (3.0 should be good)  
     final = predictions_df.withColumn("anomaly", when(col("prediction.distance") > threshold, "ANOMALY").otherwise("NORMAL"))
 
+    # only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_position", "dst_position", "src_threat", "dst_threat", "application_protocol", "anomaly")
+    only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "application_protocol", "anomaly")
+
     # Print to console debug
-    console = final.writeStream.outputMode("append").format("console").start()
-    console.awaitTermination()
+    # console = only_necessary_columns.writeStream.outputMode("append").format("console").start()
+    # console.awaitTermination()
 
     # Write to Elastic
-    elastic = final.writeStream \
+    elastic = only_necessary_columns.writeStream \
         .option("checkpointLocation", "/tmp/") \
         .format("es") \
+        .outputMode("append") \
         .start(ELASTIC_INDEX)
     elastic.awaitTermination()
     
