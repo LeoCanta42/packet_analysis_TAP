@@ -24,7 +24,7 @@ LOCAL_COORDINATES=None
 def setup_elastic():
     global ELASTIC_INDEX
 
-    es=Elasticsearch([{'host':'elasticsearch','port':9200}])
+    es=Elasticsearch([{'host':'elasticsearch','port':9200, 'scheme':'http'}])
     mapping = {
         "mappings": {
             "properties": {
