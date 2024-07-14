@@ -1,6 +1,5 @@
 from pyspark.sql import SparkSession
 from pyspark.conf import SparkConf
-from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.linalg import Vectors, VectorUDT
 from pyspark.sql.functions import col, from_json, when, udf
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType, FloatType, StructType
@@ -8,6 +7,8 @@ import joblib
 import numpy as np
 import pandas as pd
 import requests
+import geocoder
+from elasticsearch import Elasticsearch
 
 ################################
 #       Global variables       #
@@ -15,6 +16,32 @@ import requests
 
 LOCAL_IP="192.168.3.105"
 ELASTIC_INDEX = "packets"
+LOCAL_COORDINATES=None
+
+################################
+#       Elastic setup map      #
+################################
+def setup_elastic():
+    global ELASTIC_INDEX
+
+    es=Elasticsearch([{'host':'elasticsearch','port':9200}])
+    mapping = {
+        "mappings": {
+            "properties": {
+                "src_coordinates": {
+                    "type": "geo_point"
+                },
+                "dst_coordinates": {
+                    "type": "geo_point"
+                }
+            }
+        }
+    }
+    # Create the index with the defined mapping
+    if not es.indices.exists(index=ELASTIC_INDEX):
+        es.indices.create(index=ELASTIC_INDEX, body=mapping)
+    else:
+        es.indices.put_mapping(index=ELASTIC_INDEX, body=mapping)
 
 ################################
 # Anomaly detection with model #
@@ -60,37 +87,53 @@ def to_vector(features):
 ################################
 #        Geolocation           #
 ################################
-# Take the geolocalization from the IP using db-ip.com
-def get_geolocation_dbip(ip):
-    if ip==LOCAL_IP:
-        return "LOCAL"
-    else:
-        url = f"https://api.db-ip.com/v2/free/{ip}"
-        response = requests.get(url)
-        return response.json().get("stateProv")
-    
-# Take the geolocalization from the IP using ip-api.com
-def get_geolocation_ipapi(ip):
-    if ip==LOCAL_IP:
-        return "LOCAL"
-    else:
-        url =f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,org"
-        response = requests.get(url)
-        return response.json().get("regionName")
 
 # Take the geolocalization from the IP using ipinfo.io
 def get_geolocation_ipinfo(ip):
+    global LOCAL_COORDINATES
+
+    checkip=ip
     if ip==LOCAL_IP:
-        return "LOCAL"
-    else:
-        try:
-            with open('ipinfotoken.key', 'r') as file:
-                token = file.read().replace('\n', '')
-                url = f"https://ipinfo.io/{ip}?token={token}"
-                response = requests.get(url)
-                return response.json().get("region")
-        except:
-            return "ERROR"
+        if LOCAL_COORDINATES is None:
+            checkip = requests.get('https://checkip.amazonaws.com').text.strip()
+        else:
+            return "LOCAL",LOCAL_COORDINATES
+    try:
+        with open('ipinfotoken.key', 'r') as file:
+            token = file.read().replace('\n', '')
+            url = f"https://ipinfo.io/{checkip}?token={token}"
+            response = requests.get(url)
+            json=response.json()
+            city="LOCAL" if ip==LOCAL_IP else '"{}"'.format(json.get("city"))
+            #we need to parse to a geoinfo format for kibana map -> [longitude,latitude]
+            location=json.get("loc").split(",")
+            location=[float(location[1]),float(location[0])]
+            if ip==LOCAL_IP:
+                LOCAL_COORDINATES=location
+            return city,location
+    except:
+        return '"ERROR"',[0.0,0.0]
+        
+# Take the geolocalization from the IP using geocoder library
+def get_geolocation_geocoder(ip):
+    global LOCAL_COORDINATES
+
+    if ip==LOCAL_IP and LOCAL_COORDINATES is not None:
+        return "LOCAL",LOCAL_COORDINATES
+    try:
+        g = geocoder.ip('me' if ip==LOCAL_IP else ip)#this function is used to find the current information using ip
+        if ip==LOCAL_IP:
+            city='"LOCAL"'
+        else:
+            city='"{}"'.format(g.city)
+        location=g.latlng
+        #we need to parse to a geoinfo format for kibana map -> [longitude,latitude]
+        location=[float(location[1]),float(location[0])]
+        if ip==LOCAL_IP:
+            LOCAL_COORDINATES=location
+        return city,location
+    except:
+        return '"ERROR"',[0.0,0.0]
 
 
 ################################
@@ -109,7 +152,7 @@ def check_ip_threat(ip):
             url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
             headers = {'Key': key, 'Accept': 'application/json'}
             response = requests.get(url, headers=headers)
-            return response.json().get("data").get("abuseConfidenceScore") > 50
+            return response.json().get("data").get("abuseConfidenceScore") > 50 #if is over 50% we consider it a threat
         except:
             return "ERROR"
     
@@ -247,9 +290,9 @@ schema = StructType([
 def main():    
 
     # ELASTIC CONF
+    setup_elastic()
     sparkConf = SparkConf().set("es.nodes", "elasticsearch") \
-                            .set("es.port", "9200")\
-                            .set("es.index.auto.create", "true")
+                            .set("es.port", "9200")
 
     # INITIALIZE SPARKSESSION
     spark = SparkSession.builder.appName("KafkaSparkIntegration").config(conf=sparkConf).getOrCreate()
@@ -271,9 +314,19 @@ def main():
     parsed_df = parsed_df.withColumn("dst_port", when(col("layers.tcp.tcp_tcp_dstport").isNotNull(), col("layers.tcp.tcp_tcp_dstport")).otherwise(col("layers.udp.udp_udp_dstport")))
 
     # TAKE POSITION FROM THE IP
-    get_geolocation_udf = spark.udf.register("get_geolocation", get_geolocation_ipinfo)
-    # parsed_df = parsed_df.withColumn("src_position", get_geolocation_udf(col("ip_src")))
-    # parsed_df = parsed_df.withColumn("dst_position", get_geolocation_udf(col("ip_dst")))
+    get_geolocation_udf = udf(get_geolocation_ipinfo, StructType([
+        StructField("city", StringType(), False),
+        StructField("loc", ArrayType(FloatType()), False)
+    ]))
+    parsed_df = parsed_df.withColumn("geoinfo_src", get_geolocation_udf(col("ip_src")))
+    parsed_df = parsed_df.withColumn("geoinfo_dst", get_geolocation_udf(col("ip_dst")))
+
+    # PARSE THE POSITION
+    parsed_df = parsed_df.withColumn("src_city", col("geoinfo_src").getField("city"))
+    parsed_df = parsed_df.withColumn("src_coordinates", col("geoinfo_src").getField("loc"))
+
+    parsed_df = parsed_df.withColumn("dst_city", col("geoinfo_dst").getField("city"))
+    parsed_df = parsed_df.withColumn("dst_coordinates", col("geoinfo_dst").getField("loc"))
 
     # CHECK IF THE IP IS A THREAT
     check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
@@ -311,8 +364,8 @@ def main():
     threshold = 2.6  # Maximum normal traffic is near 2.49 (3.0 should be good)  
     final = predictions_df.withColumn("anomaly", when(col("prediction.distance") > threshold, "ANOMALY").otherwise("NORMAL"))
 
-    # only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_position", "dst_position", "src_threat", "dst_threat", "application_protocol", "anomaly")
-    only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "application_protocol", "anomaly")
+    # only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_city", "dst_city", "src_coordinates", "dst_coordinates", "src_threat", "dst_threat", "application_protocol", "anomaly")
+    only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_city", "dst_city", "src_coordinates", "dst_coordinates", "application_protocol", "anomaly")
 
     # Print to console debug
     # console = only_necessary_columns.writeStream.outputMode("append").format("console").start()
