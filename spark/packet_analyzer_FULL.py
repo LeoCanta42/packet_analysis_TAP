@@ -40,8 +40,6 @@ def setup_elastic():
     # Create the index with the defined mapping
     if not es.indices.exists(index=ELASTIC_INDEX):
         es.indices.create(index=ELASTIC_INDEX, body=mapping)
-    else:
-        es.indices.put_mapping(index=ELASTIC_INDEX, body=mapping)
 
 ################################
 # Anomaly detection with model #
