@@ -1,7 +1,7 @@
 from pyspark.sql import SparkSession
 from pyspark.conf import SparkConf
 from pyspark.ml.linalg import Vectors, VectorUDT
-from pyspark.sql.functions import col, from_json, when, udf
+from pyspark.sql.functions import col, from_json, when, udf, from_unixtime, date_format
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType, FloatType, StructType
 import joblib
 import numpy as np
@@ -9,6 +9,8 @@ import pandas as pd
 import requests
 import geocoder
 from elasticsearch import Elasticsearch
+import socket
+
 
 ################################
 #       Global variables       #
@@ -91,7 +93,7 @@ def get_geolocation_ipinfo(ip):
     global LOCAL_COORDINATES
 
     checkip=ip
-    if ip==LOCAL_IP:
+    if ip==LOCAL_IP or ip=="127.0.0.1":
         if LOCAL_COORDINATES is None:
             checkip = requests.get('https://checkip.amazonaws.com').text.strip()
         else:
@@ -102,11 +104,11 @@ def get_geolocation_ipinfo(ip):
             url = f"https://ipinfo.io/{checkip}?token={token}"
             response = requests.get(url)
             json=response.json()
-            city="LOCAL" if ip==LOCAL_IP else '"{}"'.format(json.get("city"))
+            city="LOCAL" if ip==LOCAL_IP or ip=="127.0.0.1" else '"{}"'.format(json.get("city"))
             #we need to parse to a geoinfo format for kibana map -> [longitude,latitude]
             location=json.get("loc").split(",")
             location=[float(location[1]),float(location[0])]
-            if ip==LOCAL_IP:
+            if ip==LOCAL_IP or ip=="127.0.0.1":
                 LOCAL_COORDINATES=location
             return city,location
     except:
@@ -116,18 +118,18 @@ def get_geolocation_ipinfo(ip):
 def get_geolocation_geocoder(ip):
     global LOCAL_COORDINATES
 
-    if ip==LOCAL_IP and LOCAL_COORDINATES is not None:
+    if ip==LOCAL_IP or ip=="127.0.0.1" and LOCAL_COORDINATES is not None:
         return "LOCAL",LOCAL_COORDINATES
     try:
-        g = geocoder.ip('me' if ip==LOCAL_IP else ip)#this function is used to find the current information using ip
-        if ip==LOCAL_IP:
+        g = geocoder.ip('me' if ip==LOCAL_IP or ip=="127.0.0.1" else ip)#this function is used to find the current information using ip
+        if ip==LOCAL_IP or ip=="127.0.0.1":
             city='"LOCAL"'
         else:
             city='"{}"'.format(g.city)
         location=g.latlng
         #we need to parse to a geoinfo format for kibana map -> [longitude,latitude]
         location=[float(location[1]),float(location[0])]
-        if ip==LOCAL_IP:
+        if ip==LOCAL_IP or ip=="127.0.0.1":
             LOCAL_COORDINATES=location
         return city,location
     except:
@@ -135,12 +137,12 @@ def get_geolocation_geocoder(ip):
 
 
 ################################
-#        IP Threat             #
+#        IP Operation          #
 ################################
 
 # Check if the IP is a threat (1000)
 def check_ip_threat(ip):
-    if ip==LOCAL_IP:
+    if ip==LOCAL_IP or ip=="127.0.0.1":
         return "LOCAL"
     else:
         try:
@@ -154,6 +156,15 @@ def check_ip_threat(ip):
         except:
             return "ERROR"
     
+def get_domain_name(ip):
+    if ip==LOCAL_IP or ip=="127.0.0.1":
+        return "LOCAL"
+    else:
+        try:
+            hostname = socket.gethostbyaddr(ip)[0]
+            return hostname
+        except socket.herror:
+            return "Unknown"
 
 ################################
 #    Application detection     #
@@ -306,6 +317,7 @@ def main():
     parsed_df = df.select(from_json(col("value").cast("string"), schema).alias("data")).select("data.*")
 
     # BASE DATA
+    parsed_df = parsed_df.withColumn("timestamp", date_format(from_unixtime(col("timestamp")/1000), "yyyy-MM-dd HH:mm:ss"))
     parsed_df = parsed_df.withColumn("ip_src", col("layers.ip.ip_ip_src").cast("string"))
     parsed_df = parsed_df.withColumn("ip_dst", col("layers.ip.ip_ip_dst").cast("string"))
     parsed_df = parsed_df.withColumn("src_port", when(col("layers.tcp.tcp_tcp_srcport").isNotNull(), col("layers.tcp.tcp_tcp_srcport")).otherwise(col("layers.udp.udp_udp_srcport")))
@@ -331,13 +343,19 @@ def main():
     # parsed_df = parsed_df.withColumn("src_threat", check_ip_threat_udf(col("ip_src")))
     # parsed_df = parsed_df.withColumn("dst_threat", check_ip_threat_udf(col("ip_dst")))
 
+    # GET DOMAIN NAME
+    # get_domain_name_udf = spark.udf.register("get_domain_name", get_domain_name)
+    # parsed_df = parsed_df.withColumn("src_domain", get_domain_name_udf(col("ip_src")))
+    # parsed_df = parsed_df.withColumn("dst_domain", get_domain_name_udf(col("ip_dst")))
+
     # APPLICATION LAYER PROTOCOL
-    application_detection_udf = spark.udf.register("application_detection", application_detection)
-    parsed_df = parsed_df.withColumn("application_protocol", when(application_detection_udf(col("src_port"))!="Unknown", application_detection_udf(col("src_port"))).otherwise(application_detection_udf(col("dst_port"))))
-    
-    #To ensure that application protocol is detected we also try in another way from frame protocols
+    #First try from protocol, so if we have it we use it
     application_extraction_udf = spark.udf.register("application_extraction", application_extraction)
-    parsed_df = parsed_df.withColumn("application_protocol", when(col("application_protocol")=="Unknown",application_extraction_udf(col("layers.frame.frame_frame_protocols"))).otherwise(col("application_protocol"))) 
+    parsed_df = parsed_df.withColumn("application_protocol", application_extraction_udf(col("layers.frame.frame_frame_protocols"))) 
+    
+    #To ensure that application protocol is detected we also try in another way from port
+    application_detection_udf = spark.udf.register("application_detection", application_detection)
+    parsed_df = parsed_df.withColumn("application_protocol", when(col("application_protocol")!="Unknown",when(application_detection_udf(col("src_port"))!="Unknown", application_detection_udf(col("src_port"))).otherwise(application_detection_udf(col("dst_port")))).otherwise(col("application_protocol")))
 
     # ANOMALY DETECTION WITH MODEL
 
@@ -362,7 +380,7 @@ def main():
     threshold = 2.6  # Maximum normal traffic is near 2.49 (3.0 should be good)  
     final = predictions_df.withColumn("anomaly", when(col("prediction.distance") > threshold, "ANOMALY").otherwise("NORMAL"))
 
-    # only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_city", "dst_city", "src_coordinates", "dst_coordinates", "src_threat", "dst_threat", "application_protocol", "anomaly")
+    # only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_city", "dst_city", "src_coordinates", "dst_coordinates", "src_threat", "dst_threat",  "application_protocol", "anomaly")
     only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_city", "dst_city", "src_coordinates", "dst_coordinates", "application_protocol", "anomaly")
 
     # Print to console debug
@@ -372,6 +390,7 @@ def main():
     # Write to Elastic
     elastic = only_necessary_columns.writeStream \
         .option("checkpointLocation", "/tmp/") \
+        .trigger(processingTime="5 seconds") \
         .format("es") \
         .outputMode("append") \
         .start(ELASTIC_INDEX)
