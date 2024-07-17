@@ -8,6 +8,9 @@ You should import the dashboard and view by:
 - Go to "Stack Management" -> "Saved Objects"
 - Press on import and select the "KibanaDashboard.ndjson" on kibana_backup
 
+## Testing anomaly
+To test an anomaly, execute the "sending_anomaly.py" script while capturing packets on loopback interface (lo)
+
 ## Services versions
 logstash 8.13.2
 zookeper right after 7.6.1
