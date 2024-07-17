@@ -12,12 +12,12 @@ You should import the dashboard and view by:
 To test an anomaly, execute the "sending_anomaly.py" script while capturing packets on loopback interface (lo)
 
 ## Services versions
-logstash 8.13.2
-zookeper right after 7.6.1
-cp-kafka right after 7.6.1
-spark custom 3.5.1
-elasticsearch 8.13.4
-kibana 8.13.4
+- logstash 8.13.2
+- zookeper right after 7.6.1
+- cp-kafka right after 7.6.1
+- spark custom 3.5.1
+- elasticsearch 8.13.4
+- kibana 8.13.4
 
 ## Docker Desktop
 Resources section for managing memory:

@@ -14,7 +14,7 @@ from elasticsearch import Elasticsearch
 #       Global variables       #
 ################################
 
-LOCAL_IP="192.168.3.105"
+LOCAL_IP="192.168.91.191"
 ELASTIC_INDEX = "packets"
 
 ################################
