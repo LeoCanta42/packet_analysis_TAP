@@ -7,9 +7,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import requests
-import geocoder
 from elasticsearch import Elasticsearch
-import socket
 
 
 ################################
@@ -18,7 +16,6 @@ import socket
 
 LOCAL_IP="192.168.3.105"
 ELASTIC_INDEX = "packets"
-LOCAL_COORDINATES=None
 
 ################################
 #       Elastic setup map      #
@@ -88,83 +85,31 @@ def to_vector(features):
 #        Geolocation           #
 ################################
 
+geolocation_cache = {}
+
 # Take the geolocalization from the IP using ipinfo.io
 def get_geolocation_ipinfo(ip):
-    global LOCAL_COORDINATES
-
-    checkip=ip
-    if ip==LOCAL_IP or ip=="127.0.0.1":
-        if LOCAL_COORDINATES is None:
-            checkip = requests.get('https://checkip.amazonaws.com').text.strip()
+    if ip in geolocation_cache:
+        return geolocation_cache[ip]
+    else:
+        if ip==LOCAL_IP or ip=="127.0.0.1":
+            geolocation_cache[ip]={"city":"LOCAL","loc":[0.0,0.0]}
         else:
-            return "LOCAL",LOCAL_COORDINATES
-    try:
-        with open('ipinfotoken.key', 'r') as file:
-            token = file.read().replace('\n', '')
-            url = f"https://ipinfo.io/{checkip}?token={token}"
-            response = requests.get(url)
-            json=response.json()
-            city="LOCAL" if ip==LOCAL_IP or ip=="127.0.0.1" else '"{}"'.format(json.get("city"))
-            #we need to parse to a geoinfo format for kibana map -> [longitude,latitude]
-            location=json.get("loc").split(",")
-            location=[float(location[1]),float(location[0])]
-            if ip==LOCAL_IP or ip=="127.0.0.1":
-                LOCAL_COORDINATES=location
-            return city,location
-    except:
-        return '"ERROR"',[0.0,0.0]
+            try:
+                with open('ipinfotoken.key', 'r') as file:
+                    token = file.read().replace('\n', '')
+                    url = f"https://ipinfo.io/{ip}?token={token}"
+                    response = requests.get(url)
+                    json=response.json()
+                    city='"{}"'.format(json.get("city"))
+                    #we need to parse to a geoinfo format for kibana map -> [longitude,latitude]
+                    location=json.get("loc").split(",")
+                    location=[float(location[1]),float(location[0])]
         
-# Take the geolocalization from the IP using geocoder library
-def get_geolocation_geocoder(ip):
-    global LOCAL_COORDINATES
-
-    if ip==LOCAL_IP or ip=="127.0.0.1" and LOCAL_COORDINATES is not None:
-        return "LOCAL",LOCAL_COORDINATES
-    try:
-        g = geocoder.ip('me' if ip==LOCAL_IP or ip=="127.0.0.1" else ip)#this function is used to find the current information using ip
-        if ip==LOCAL_IP or ip=="127.0.0.1":
-            city='"LOCAL"'
-        else:
-            city='"{}"'.format(g.city)
-        location=g.latlng
-        #we need to parse to a geoinfo format for kibana map -> [longitude,latitude]
-        location=[float(location[1]),float(location[0])]
-        if ip==LOCAL_IP or ip=="127.0.0.1":
-            LOCAL_COORDINATES=location
-        return city,location
-    except:
-        return '"ERROR"',[0.0,0.0]
-
-
-################################
-#        IP Operation          #
-################################
-
-# Check if the IP is a threat (1000)
-def check_ip_threat(ip):
-    if ip==LOCAL_IP or ip=="127.0.0.1":
-        return "LOCAL"
-    else:
-        try:
-            #open a file to get the key
-            with open('abuseipdb.key', 'r') as file:
-                key = file.read().replace('\n', '')
-            url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
-            headers = {'Key': key, 'Accept': 'application/json'}
-            response = requests.get(url, headers=headers)
-            return response.json().get("data").get("abuseConfidenceScore") > 50 #if is over 50% we consider it a threat
-        except:
-            return "ERROR"
-    
-def get_domain_name(ip):
-    if ip==LOCAL_IP or ip=="127.0.0.1":
-        return "LOCAL"
-    else:
-        try:
-            hostname = socket.gethostbyaddr(ip)[0]
-            return hostname
-        except socket.herror:
-            return "Unknown"
+                    geolocation_cache[ip]={"city":city,"loc":location}
+            except:
+                return {"city":"ERROR","loc":[0.0,0.0]}
+        return geolocation_cache[ip]
 
 ################################
 #    Application detection     #
@@ -338,16 +283,6 @@ def main():
     parsed_df = parsed_df.withColumn("dst_city", col("geoinfo_dst").getField("city"))
     parsed_df = parsed_df.withColumn("dst_coordinates", col("geoinfo_dst").getField("loc"))
 
-    # CHECK IF THE IP IS A THREAT
-    check_ip_threat_udf = spark.udf.register("check_ip_threat", check_ip_threat)
-    # parsed_df = parsed_df.withColumn("src_threat", check_ip_threat_udf(col("ip_src")))
-    # parsed_df = parsed_df.withColumn("dst_threat", check_ip_threat_udf(col("ip_dst")))
-
-    # GET DOMAIN NAME
-    # get_domain_name_udf = spark.udf.register("get_domain_name", get_domain_name)
-    # parsed_df = parsed_df.withColumn("src_domain", get_domain_name_udf(col("ip_src")))
-    # parsed_df = parsed_df.withColumn("dst_domain", get_domain_name_udf(col("ip_dst")))
-
     # APPLICATION LAYER PROTOCOL
     #First try from protocol, so if we have it we use it
     application_extraction_udf = spark.udf.register("application_extraction", application_extraction)
@@ -355,10 +290,9 @@ def main():
     
     #To ensure that application protocol is detected we also try in another way from port
     application_detection_udf = spark.udf.register("application_detection", application_detection)
-    parsed_df = parsed_df.withColumn("application_protocol", when(col("application_protocol")!="Unknown",when(application_detection_udf(col("src_port"))!="Unknown", application_detection_udf(col("src_port"))).otherwise(application_detection_udf(col("dst_port")))).otherwise(col("application_protocol")))
+    parsed_df = parsed_df.withColumn("application_protocol", when(col("application_protocol")=="Unknown",when(application_detection_udf(col("src_port"))!="Unknown", application_detection_udf(col("src_port"))).otherwise(application_detection_udf(col("dst_port")))).otherwise(col("application_protocol")))
 
     # ANOMALY DETECTION WITH MODEL
-
     # Extract features and scale them
     extract_features_udf = udf(extract_features, ArrayType(IntegerType()))
     features_df = parsed_df.withColumn("features", extract_features_udf(col("layers")))
@@ -380,22 +314,21 @@ def main():
     threshold = 2.6  # Maximum normal traffic is near 2.49 (3.0 should be good)  
     final = predictions_df.withColumn("anomaly", when(col("prediction.distance") > threshold, "ANOMALY").otherwise("NORMAL"))
 
-    # only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_city", "dst_city", "src_coordinates", "dst_coordinates", "src_threat", "dst_threat",  "application_protocol", "anomaly")
+    # FULL
     only_necessary_columns = final.select("timestamp", "ip_src", "ip_dst", "src_port", "dst_port", "src_city", "dst_city", "src_coordinates", "dst_coordinates", "application_protocol", "anomaly")
 
     # Print to console debug
-    # console = only_necessary_columns.writeStream.outputMode("append").format("console").start()
-    # console.awaitTermination()
+    console = only_necessary_columns.writeStream.outputMode("append").format("console").start()
 
     # Write to Elastic
     elastic = only_necessary_columns.writeStream \
         .option("checkpointLocation", "/tmp/") \
-        .trigger(processingTime="5 seconds") \
         .format("es") \
         .outputMode("append") \
         .start(ELASTIC_INDEX)
-    elastic.awaitTermination()
     
+    console.awaitTermination()
+    elastic.awaitTermination()
 
 if __name__ == "__main__":
     main()
