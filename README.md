@@ -1,8 +1,12 @@
 ## Start
-### First shell
-./start.sh 'netowrk-device' 'time_in_seconds'
-### Second shell
-docker-compose up -d
+- Start the environment by using "docker-compose up -d"
+- When everything is started, start capturing with "./capture.sh interface seconds"
+
+## View
+View your data in Kibana by accessing localhost:5601 on your browser.
+You should import the dashboard and view by:
+- Go to "Stack Management" -> "Saved Objects"
+- Press on import and select the "KibanaDashboard.ndjson" on kibana_backup
 
 ## Services versions
 logstash 8.13.2
@@ -13,5 +17,5 @@ elasticsearch 8.13.4
 kibana 8.13.4
 
 ## Docker Desktop
-resources section for managing memory: 
-8gb ram, 2gb swap
+Resources section for managing memory:
+8gb ram, 2gb swap (at least)
